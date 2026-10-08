@@ -221,3 +221,15 @@ assert name in [fb.itemText(i) for i in range(1, [fb.itemText(i) for i in range(
 fb.setEditText("times new roman"); fb.lineEdit().returnPressed.emit()
 assert w.book.sheet("Flora").cell(3, 2).font.name == "Times New Roman"
 print("OK fonts")
+
+# ---- frozen panes: unfreeze, refreeze, undo
+w.open_sheet("Gazetteer"); g = w.grid
+gz = w.book.sheet("Gazetteer")
+assert gz.freeze_panes == "C5"
+w.set_freeze(None); g._layout()
+assert gz.freeze_panes is None and g.fcol == 1 and g.frow == 1
+w.undo(); g._layout(); assert gz.freeze_panes == "C5" and g.fcol == 3
+g.set_current(5, 2); w.set_freeze("here"); assert gz.freeze_panes == "B5"
+w.set_freeze("row"); assert gz.freeze_panes == "A2"
+assert w.font_box.minimumWidth() >= 200
+print("OK freeze")

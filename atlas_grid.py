@@ -1042,6 +1042,16 @@ class SheetView(QAbstractScrollArea):
                 self.viewport().setCursor(Qt.SplitHCursor if edge[0] == "col" else Qt.SplitVCursor)
             else:
                 self.viewport().unsetCursor()
+            # say what the frozen-pane divider is when the mouse is on it
+            tip = ""
+            if self.ws is not None and self.ws.freeze_panes:
+                fx_line = self.ox + self.colx[self.fcol - 1]
+                fy_line = self.oy + self.rowy[self.frow - 1]
+                if (self.fcol > 1 and abs(pos.x() - fx_line) <= 3) or (self.frow > 1 and abs(pos.y() - fy_line) <= 3):
+                    tip = (f"Frozen panes: everything above and left of {self.ws.freeze_panes} stays put while "
+                           "you scroll.\nView → Freeze panes, or right-click a cell, to change or unfreeze.")
+            if tip != self.viewport().toolTip():
+                self.viewport().setToolTip(tip)
             if self.tool is not None:
                 row, col = self.hit(pos)
                 self.tool.hover(row, col)

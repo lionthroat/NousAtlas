@@ -779,7 +779,8 @@ class MainWindow(QMainWindow):
         self.addToolBar(tb)
         self.toolbar = tb
         self.font_box = FontBox(self.fonts_in_use)
-        self.font_box.setMaximumWidth(200)
+        self.font_box.setMinimumWidth(210)
+        self.font_box.setMaximumWidth(260)
         self.font_box.fontChosen.connect(lambda name: self.set_font_attr(name=name))
         tb.addWidget(self.font_box)
         self.size_box = QComboBox()
@@ -906,6 +907,12 @@ class MainWindow(QMainWindow):
         self.a_adapt.setChecked(self.grid.adapt_colors)
         self.a_adapt.setToolTip("Display only: dark text written for a white page is shown lighter. The file isn't changed.")
         v.addAction(self.a_adapt)
+        fz = v.addMenu("Freeze panes")
+        fz.addAction(self.act("Freeze above and left of the selected cell", lambda: self.set_freeze("here")))
+        fz.addAction(self.act("Freeze top row", lambda: self.set_freeze("row")))
+        fz.addAction(self.act("Freeze first column", lambda: self.set_freeze("col")))
+        fz.addSeparator()
+        fz.addAction(self.act("Unfreeze", lambda: self.set_freeze(None)))
         self.a_show_ranges_sheet = self.act("Show the Ranges data sheet", self.toggle_ranges_sheet, None, True)
         v.addAction(self.a_show_ranges_sheet)
         v.addSeparator()
@@ -1995,6 +2002,22 @@ class MainWindow(QMainWindow):
         self.book.done("structure")
         self.grid.set_current(r1, c1)
 
+    def set_freeze(self, how):
+        """Frozen rows/columns stay put while the rest scrolls (undoable)."""
+        ws = self.current_ws()
+        if ws is None:
+            return
+        r, c = self.grid.cur
+        target = {None: None, "row": "A2", "col": "B1",
+                  "here": None if (r, c) == (1, 1) else f"{fx.num_to_col(c)}{r}"}[how]
+        if target == ws.freeze_panes:
+            return
+        self.book.begin([ws])
+        ws.freeze_panes = target
+        self.book.done("layout")
+        self.statusBar().showMessage("Unfrozen." if target is None else
+                                     f"Frozen above and left of {target}. View → Freeze panes → Unfreeze undoes it.", 6000)
+
     def set_row_mode(self, on):
         self.grid.row_mode = "compact" if on else "fit"
         self.a_compact.setChecked(on)
@@ -2032,6 +2055,12 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             menu.addAction("Fit row height to text", lambda: self.grid.autofit("row", self.grid.cur[0]))
             menu.addAction("Fit column width to text", lambda: self.grid.autofit("col", self.grid.cur[1]))
+            menu.addSeparator()
+            r, c = self.grid.cur
+            if ws.freeze_panes:
+                menu.addAction(f"Unfreeze panes (frozen at {ws.freeze_panes})", lambda: self.set_freeze(None))
+            if (r, c) != (1, 1):
+                menu.addAction(f"Freeze above and left of {fx.num_to_col(c)}{r}", lambda: self.set_freeze("here"))
         cell = self.current_cell()
         if cell is not None and isinstance(cell.value, str) and cell.value.strip():
             menu.addSeparator()
