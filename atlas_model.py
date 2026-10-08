@@ -27,6 +27,7 @@ META_SHEET = "_NousAtlas"
 RANGES_SHEET = "Ranges"
 DEFAULT_COL_WIDTH = 8.43          # Excel's default, in "characters"
 DEFAULT_ROW_HEIGHT = 15.0         # points
+PER_SHEET_KEYS = ("pinned_rows", "sheet_layout")   # meta entries keyed by sheet title
 
 
 # ---------------------------------------------------------------- colours
@@ -564,8 +565,9 @@ class Book:
             group["sheets"] = [new if s == old else s for s in group["sheets"]]
         if old in self.meta["maps"]:
             self.meta["maps"][new] = self.meta["maps"].pop(old)
-        if old in self.meta.get("pinned_rows", {}):
-            self.meta["pinned_rows"][new] = self.meta["pinned_rows"].pop(old)
+        for key in PER_SHEET_KEYS:
+            if old in self.meta.get(key, {}):
+                self.meta[key][new] = self.meta[key].pop(old)
         if self.ranges is not None:
             self.ranges.rename_map(old, new)
 
@@ -580,7 +582,8 @@ class Book:
         for group in self.meta["groups"]:
             group["sheets"] = [s for s in group["sheets"] if s != title]
         self.meta["maps"].pop(title, None)
-        self.meta.get("pinned_rows", {}).pop(title, None)
+        for key in PER_SHEET_KEYS:
+            self.meta.get(key, {}).pop(title, None)
         if self.ranges is not None:
             self.ranges.drop_map(title)
 
@@ -594,8 +597,9 @@ class Book:
                 group["sheets"].insert(group["sheets"].index(ws.title) + 1, new.title)
         if ws.title in self.meta["maps"]:
             self.meta["maps"][new.title] = dict(self.meta["maps"][ws.title])
-        if ws.title in self.meta.get("pinned_rows", {}):
-            self.meta["pinned_rows"][new.title] = list(self.meta["pinned_rows"][ws.title])
+        for key in PER_SHEET_KEYS:
+            if ws.title in self.meta.get(key, {}):
+                self.meta[key][new.title] = copy.deepcopy(self.meta[key][ws.title])
         return new
 
     # -- colours used anywhere (for the palette tools)

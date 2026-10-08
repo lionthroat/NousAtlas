@@ -112,6 +112,8 @@ class SheetView(QAbstractScrollArea):
         self._merges = {}
         self._covered = {}
         self._region = QRect()
+        self.pad_x, self.pad_y, self.gap = PAD_X, PAD_Y, 0
+        self.ox = self.oy = 0
         self._spill_to = 0
         self.clip = None                # set by the window: shared clipboard
         self.setFocusPolicy(Qt.StrongFocus)
@@ -185,6 +187,11 @@ class SheetView(QAbstractScrollArea):
         self.nrows = max(ws.max_row, self.cur[0], self.anchor[0]) + EXTRA_ROWS
         self.ncols = max(ws.max_column, self.cur[1], self.anchor[1]) + EXTRA_COLS
         z = self.zoom
+        lay = self.sheet_layout()
+        self.pad_x = int(round(lay["pad_x"] * z))
+        self.pad_y = int(round(lay["pad_y"] * z))
+        self.gap = int(round(lay["spacing"] * z))
+        margin = int(round(lay["margin"] * z))
         default_w = ws.sheet_format.defaultColWidth or ws.sheet_format.baseColWidth and (ws.sheet_format.baseColWidth + 0.71) or DEFAULT_COL_WIDTH
         self.colx = [0]
         dims = ws.column_dimensions
@@ -194,7 +201,7 @@ class SheetView(QAbstractScrollArea):
                 w = 0
             else:
                 width = d.width if d is not None and d.width else default_w
-                w = int((int(width * MDW + 5)) * z)
+                w = int((int(width * MDW + 5)) * z) + self.gap
             self.colx.append(self.colx[-1] + w)
         self.rowy = [0]
         default_h = ws.sheet_format.defaultRowHeight or DEFAULT_ROW_HEIGHT
@@ -207,7 +214,7 @@ class SheetView(QAbstractScrollArea):
                 h = 0
             elif r in pinned:
                 # a height you set by hand is kept exactly, in either row mode
-                h = int(((d.height if d is not None and d.height else None) or default_h) * 96 / 72 * z)
+                h = int(((d.height if d is not None and d.height else None) or default_h) * 96 / 72 * z) + self.gap
             else:
                 stored = d.height if d is not None and d.height else None
                 base = (stored or default_h) * 96 / 72
@@ -215,7 +222,7 @@ class SheetView(QAbstractScrollArea):
                 h = max(base, fit)
                 if self.row_mode == "compact":
                     h = min(h, max(base if stored and base < cap else 0, cap))
-                h = int(h * z)
+                h = int(h * z) + self.gap
             self.rowy.append(self.rowy[-1] + h)
         # frozen panes
         self.frow, self.fcol = 1, 1
@@ -228,16 +235,28 @@ class SheetView(QAbstractScrollArea):
             fm = QFontMetrics(self._ui_font())
             self.header_w = max(MIN_HEADER_W, fm.horizontalAdvance(str(self.nrows)) + 14)
             self.header_h = int(HEADER_H * max(0.8, min(1.3, z)))
+        self.ox = self.header_w + margin       # where column A starts
+        self.oy = self.header_h + margin       # where row 1 starts
         self._layout_dirty = False
         self._update_scrollbars()
 
+    DEFAULT_LAYOUT = {"margin": 0, "pad_x": PAD_X, "pad_y": PAD_Y, "spacing": 0}
+
+    def sheet_layout(self):
+        """This sheet's margin, cell padding and cell spacing (unzoomed px)."""
+        out = dict(self.DEFAULT_LAYOUT)
+        if self.book is not None and self.ws is not None:
+            out.update(self.book.meta.get("sheet_layout", {}).get(self.ws.title, {}))
+        return out
+
     def _compact_cap(self):
         fm = self._metrics("Arial", 10, False, False, 1.0)
-        return fm.lineSpacing() * COMPACT_LINES + 2 * PAD_Y + 4
+        return fm.lineSpacing() * COMPACT_LINES + 2 * self.sheet_layout()["pad_y"] + 4
 
     def _compute_fit(self):
         """Heights each row needs for its text, at 100% zoom."""
         ws = self.ws
+        lay = self.sheet_layout()
         self._fit = {}
         self._fit_done = True
         if self.row_mode is None:
@@ -261,7 +280,7 @@ class SheetView(QAbstractScrollArea):
                 span = self._merges.get((r, c))
                 if span and span[0] > r:
                     continue                    # tall merges size themselves
-                w = sum(colw(cc) for cc in range(c, (span[1] if span else c) + 1)) - 2 * PAD_X
+                w = sum(colw(cc) for cc in range(c, (span[1] if span else c) + 1)) - 2 * lay["pad_x"]
                 if st.wrap and w > 4:
                     rect = st.fm.boundingRect(QRect(0, 0, w, 100000), Qt.TextWordWrap, v)
                     h = rect.height()
@@ -269,7 +288,7 @@ class SheetView(QAbstractScrollArea):
                     h = st.fm.lineSpacing() * (v.count("\n") + 1)
                 else:
                     continue
-                h += 2 * PAD_Y + 2
+                h += 2 * lay["pad_y"] + 2
                 if h > self._fit.get(r, 0):
                     self._fit[r] = h
         finally:
@@ -282,8 +301,8 @@ class SheetView(QAbstractScrollArea):
         fh = self.rowy[self.frow - 1]
         total_w = self.colx[-1] - fw
         total_h = self.rowy[-1] - fh
-        avail_w = vp.width() - self.header_w - fw
-        avail_h = vp.height() - self.header_h - fh
+        avail_w = vp.width() - self.ox - fw
+        avail_h = vp.height() - self.oy - fh
         self.horizontalScrollBar().setRange(0, max(0, total_w - avail_w))
         self.verticalScrollBar().setRange(0, max(0, total_h - avail_h))
         self.horizontalScrollBar().setPageStep(max(20, avail_w))
@@ -311,14 +330,14 @@ class SheetView(QAbstractScrollArea):
     # screen position of a cell's left / top edge
     def x_of(self, c):
         if c < self.fcol:
-            return self.header_w + self.colx[c - 1]
-        return (self.header_w + self.colx[self.fcol - 1] + (self.colx[c - 1] - self.colx[self.fcol - 1])
+            return self.ox + self.colx[c - 1]
+        return (self.ox + self.colx[self.fcol - 1] + (self.colx[c - 1] - self.colx[self.fcol - 1])
                 - self.horizontalScrollBar().value())
 
     def y_of(self, r):
         if r < self.frow:
-            return self.header_h + self.rowy[r - 1]
-        return (self.header_h + self.rowy[self.frow - 1] + (self.rowy[r - 1] - self.rowy[self.frow - 1])
+            return self.oy + self.rowy[r - 1]
+        return (self.oy + self.rowy[self.frow - 1] + (self.rowy[r - 1] - self.rowy[self.frow - 1])
                 - self.verticalScrollBar().value())
 
     def cell_rect(self, r, c, merged=True):
@@ -331,7 +350,7 @@ class SheetView(QAbstractScrollArea):
                 r2, c2 = span
         self._ensure_extent(r2, c2)
         x, y = self.x_of(c), self.y_of(r)
-        return QRect(x, y, self.colx[c2] - self.colx[c - 1], self.rowy[r2] - self.rowy[r - 1])
+        return QRect(x, y, self.colx[c2] - self.colx[c - 1] - self.gap, self.rowy[r2] - self.rowy[r - 1] - self.gap)
 
     def hit(self, pos):
         """(row, col) under a viewport position, or None. Headers give 0."""
@@ -342,14 +361,14 @@ class SheetView(QAbstractScrollArea):
         if x < self.header_w:
             col = 0
         else:
-            ax = x - self.header_w
+            ax = max(0, x - self.ox)
             if ax >= fx_w:
                 ax += self.horizontalScrollBar().value()
             col = min(bisect.bisect_right(self.colx, ax), self.ncols)
         if y < self.header_h:
             row = 0
         else:
-            ay = y - self.header_h
+            ay = max(0, y - self.oy)
             if ay >= fy_h:
                 ay += self.verticalScrollBar().value()
             row = min(bisect.bisect_right(self.rowy, ay), self.nrows)
@@ -364,7 +383,7 @@ class SheetView(QAbstractScrollArea):
         if c >= self.fcol:
             left = self.colx[c - 1] - self.colx[self.fcol - 1]
             right = self.colx[c] - self.colx[self.fcol - 1]
-            avail = vp.width() - self.header_w - self.colx[self.fcol - 1]
+            avail = vp.width() - self.ox - self.colx[self.fcol - 1]
             sb = self.horizontalScrollBar()
             if left < sb.value():
                 sb.setValue(left)
@@ -373,7 +392,7 @@ class SheetView(QAbstractScrollArea):
         if r >= self.frow:
             top = self.rowy[r - 1] - self.rowy[self.frow - 1]
             bottom = self.rowy[r] - self.rowy[self.frow - 1]
-            avail = vp.height() - self.header_h - self.rowy[self.frow - 1]
+            avail = vp.height() - self.oy - self.rowy[self.frow - 1]
             sb = self.verticalScrollBar()
             if top < sb.value():
                 sb.setValue(top)
@@ -465,7 +484,7 @@ class SheetView(QAbstractScrollArea):
             return
         self._layout()
         vp = self.viewport().rect()
-        hw, hh = self.header_w, self.header_h
+        hw, hh = self.ox, self.oy
         fw = self.colx[self.fcol - 1]
         fh = self.rowy[self.frow - 1]
         regions = [
@@ -512,7 +531,7 @@ class SheetView(QAbstractScrollArea):
             # binary search the first visible one
             off = self.verticalScrollBar().value() if is_row else self.horizontalScrollBar().value()
             base = edges[f - 1]
-            start = (self.header_h if is_row else self.header_w) + base
+            start = (self.oy if is_row else self.ox) + base
             target = lo - start + off + base
             i = max(f, bisect.bisect_left(edges, target))
             rng = range(i, n + 1)
@@ -529,7 +548,7 @@ class SheetView(QAbstractScrollArea):
         ws = self.ws
         cells = ws._cells
         grid_pen = QPen(QColor(t["grid"]), 1)
-        show_grid = ws.sheet_view.showGridLines is not False
+        show_grid = ws.sheet_view.showGridLines is not False and self.gap == 0
         # 1. gridlines
         if show_grid:
             p.setPen(grid_pen)
@@ -650,8 +669,9 @@ class SheetView(QAbstractScrollArea):
         vflag = {"top": Qt.AlignTop, "center": Qt.AlignVCenter, "justify": Qt.AlignTop,
                  "distributed": Qt.AlignVCenter}.get(st.valign, Qt.AlignBottom)
         indent = int(st.indent * 9 * self.zoom)
-        inner = rect.adjusted(PAD_X + (indent if h == "left" else 0), PAD_Y,
-                              -PAD_X - (indent if h == "right" else 0), -PAD_Y - 1)
+        px, py = self.pad_x, self.pad_y
+        inner = rect.adjusted(px + (indent if h == "left" else 0), py,
+                              -px - (indent if h == "right" else 0), -py - 1)
         clip = QRect(rect)
         wrap = 0
         if st.wrap:
@@ -664,7 +684,7 @@ class SheetView(QAbstractScrollArea):
                 inner.setHeight(max(ls, inner.height() // ls * ls))   # whole lines only
         elif "\n" not in text and h == "left" and (r, c) not in self._merges:
             # spill into empty cells to the right, the way Excel does
-            need = st.fm.horizontalAdvance(text) + 2 * PAD_X + indent
+            need = st.fm.horizontalAdvance(text) + 2 * px + indent
             cc = c
             right = rect.right()
             while need > right - rect.left() and cc < self.ncols:
@@ -676,7 +696,7 @@ class SheetView(QAbstractScrollArea):
                 right += self.colx[cc] - self.colx[cc - 1]
             if cc > c:
                 clip.setRight(right)
-                inner.setRight(right - PAD_X)
+                inner.setRight(right - px)
         elif "\n" not in text and h == "right" and is_number and st.fm.horizontalAdvance(text) > inner.width():
             text = "#" * max(1, inner.width() // max(1, st.fm.horizontalAdvance("#")))
         p.save()
@@ -751,8 +771,8 @@ class SheetView(QAbstractScrollArea):
         t = self.theme
         acc = QColor(t["accent"])
         x1, y1 = self.x_of(c1), self.y_of(r1)
-        x2 = self.x_of(c2) + self.colx[c2] - self.colx[c2 - 1]
-        y2 = self.y_of(r2) + self.rowy[r2] - self.rowy[r2 - 1]
+        x2 = self.x_of(c2) + self.colx[c2] - self.colx[c2 - 1] - self.gap
+        y2 = self.y_of(r2) + self.rowy[r2] - self.rowy[r2 - 1] - self.gap
         sel = QRect(x1, y1, x2 - x1, y2 - y1)
         if (r1, c1) != (r2, c2) and not self._is_single_merge(r1, c1, r2, c2):
             # tint the selection, leaving the active cell (where typing goes) clear
@@ -781,7 +801,7 @@ class SheetView(QAbstractScrollArea):
         txt = QColor(t["header_text"])
         acc = QColor(t["accent"])
         for frozen in (False, True):
-            area = QRect(hw + (0 if frozen else self.colx[self.fcol - 1]), 0, vp.width(), hh)
+            area = QRect(self.ox + (0 if frozen else self.colx[self.fcol - 1]), 0, vp.width(), hh)
             cols = self._visible(self.colx, area.left(), vp.right(), frozen, False)
             p.save()
             p.setClipRect(area)
@@ -798,7 +818,7 @@ class SheetView(QAbstractScrollArea):
                 p.setPen(acc if c1 <= c <= c2 else txt)
                 p.drawText(rect, Qt.AlignCenter, get_column_letter(c))
             p.restore()
-            area = QRect(0, hh + (0 if frozen else self.rowy[self.frow - 1]), hw, vp.height())
+            area = QRect(0, self.oy + (0 if frozen else self.rowy[self.frow - 1]), hw, vp.height())
             rows = self._visible(self.rowy, area.top(), vp.bottom(), frozen, True)
             p.save()
             p.setClipRect(area)
@@ -1116,6 +1136,7 @@ class SheetView(QAbstractScrollArea):
                 idxs = range(r1, r2 + 1)
             else:
                 idxs = [idx]
+        px = max(4, px - self.gap)
         self.book.begin([self.ws])
         for i in idxs:
             if axis == "col":
@@ -1155,7 +1176,7 @@ class SheetView(QAbstractScrollArea):
                 continue
             text = self.book.display_text(self.ws, r, c)
             w = max(st.fm.horizontalAdvance(line) for line in text.split("\n")) if text else 0
-            best = max(best, w + 2 * PAD_X + 4)
+            best = max(best, w + 2 * self.pad_x + 4 + self.gap)
         if best:
             self.set_size("col", idx, min(best, int(900 * self.zoom)), [idx])
 

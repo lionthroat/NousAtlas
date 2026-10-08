@@ -390,3 +390,88 @@ class SuggestStylesDialog(QDialog):
 
     def chosen(self):
         return [(key, edit.text().strip()) for key, edit in self.rows if edit.text().strip()]
+
+
+class SheetLayoutDialog(QDialog):
+    """Margin, cell padding and cell spacing for a sheet, previewed live.
+    Display only: column widths and the data in the file don't change."""
+
+    FIELDS = [("margin", "Margin", "Space between the edge of the pane and the grid (left and top)", 200),
+              ("pad_x", "Cell padding, sides", "Space between a cell's left and right edges and its text", 60),
+              ("pad_y", "Cell padding, top and bottom", "Space between a cell's top and bottom edges and its text", 60),
+              ("spacing", "Cell spacing", "A gap between cells, where the sheet shows through (gridlines go away)", 40)]
+
+    def __init__(self, window):
+        from PySide6.QtWidgets import QSpinBox
+        super().__init__(window)
+        self.window = window
+        self.book = window.book
+        self.ws = window.current_ws()
+        self.setWindowTitle(f"Margins and spacing · {self.ws.title}")
+        self.original = copy.deepcopy(self.book.meta.get("sheet_layout", {}))
+        lay = QVBoxLayout(self)
+        note = QLabel("Like an HTML table's margin, cellpadding and cellspacing. Only changes how the sheet looks "
+                      "in Atlas; columns, formulas and the file's data stay the same.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        grid = QGridLayout()
+        current = window.grid.sheet_layout()
+        self.spins = {}
+        for i, (key, label, tip, top) in enumerate(self.FIELDS):
+            lbl = QLabel(label)
+            lbl.setToolTip(tip)
+            spin = QSpinBox()
+            spin.setRange(0, top)
+            spin.setSuffix(" px")
+            spin.setValue(int(current[key]))
+            spin.setToolTip(tip)
+            spin.valueChanged.connect(self.preview)
+            grid.addWidget(lbl, i, 0)
+            grid.addWidget(spin, i, 1)
+            self.spins[key] = spin
+        lay.addLayout(grid)
+        row = QHBoxLayout()
+        for label, values in (("Excel-like", (0, 4, 2, 0)), ("Roomy", (16, 8, 4, 0)), ("Table", (24, 10, 6, 3))):
+            b = QPushButton(label)
+            b.clicked.connect(lambda _=False, v=values: self.set_values(v))
+            row.addWidget(b)
+        row.addStretch()
+        lay.addLayout(row)
+        self.all = QCheckBox("Use these on every sheet")
+        lay.addWidget(self.all)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def set_values(self, values):
+        for (key, *_), v in zip(self.FIELDS, values):
+            self.spins[key].setValue(v)
+
+    def values(self):
+        return {key: spin.value() for key, spin in self.spins.items()}
+
+    def _apply(self, meta_layout):
+        self.book.meta["sheet_layout"] = meta_layout
+        self.window.grid.invalidate_layout(refit=True)
+
+    def preview(self):
+        trial = copy.deepcopy(self.original)
+        trial[self.ws.title] = self.values()
+        self._apply(trial)
+
+    def reject(self):
+        self._apply(copy.deepcopy(self.original))
+        super().reject()
+
+    def accept(self):
+        final = copy.deepcopy(self.original)
+        titles = [s.title for s in self.book.user_sheets()] if self.all.isChecked() else [self.ws.title]
+        for t in titles:
+            final[t] = self.values()
+        self._apply(copy.deepcopy(self.original))
+        self.book.begin([])
+        self.book.meta["sheet_layout"] = final
+        self.book.done("layout")
+        super().accept()

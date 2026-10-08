@@ -555,6 +555,7 @@ class RangesPanel(QWidget):
         self.here.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         b.addWidget(self.here)
         lay.addWidget(self.body, 1)
+        lay.addStretch()
         self.refresh()
 
     # -- state <-> controls

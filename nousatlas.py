@@ -27,7 +27,7 @@ from openpyxl.styles import NamedStyle
 import atlas_formula as fx
 import atlas_model as model
 import atlas_ranges as ranges
-from atlas_dialogs import (ColorPicker, PaletteDialog, RemapDialog,
+from atlas_dialogs import (ColorPicker, PaletteDialog, RemapDialog, SheetLayoutDialog,
                            SuggestStylesDialog, swatch_icon)
 from atlas_grid import SheetView
 from atlas_model import Book
@@ -856,6 +856,8 @@ class MainWindow(QMainWindow):
         fm.addAction(self.act("Fill colour…", self.choose_fill_color))
         fm.addAction(self.a_clear_fmt)
         fm.addSeparator()
+        fm.addAction(self.act("Sheet margins and spacing…", self.edit_sheet_layout))
+        fm.addSeparator()
         fm.addAction(self.act("Palette…", self.edit_palette))
         fm.addAction(self.act("Swap colours for your palette…", self.remap_colors))
         fm.addSeparator()
@@ -1267,6 +1269,7 @@ class MainWindow(QMainWindow):
                 ws = self.book.sheet(name)
                 menu.addAction("Rename…", lambda: self.rename_sheet(ws))
                 menu.addAction("Duplicate", lambda: self.duplicate_sheet(ws))
+                menu.addAction("Margins and spacing…", lambda: (self.open_sheet(name), self.edit_sheet_layout()))
                 move = menu.addMenu("Move to group")
                 for g in self.book.meta["groups"]:
                     move.addAction(g["name"], lambda _=False, g=g["name"]: self.move_to_group(name, g))
@@ -1666,6 +1669,10 @@ class MainWindow(QMainWindow):
     def pick_color(self, current, title):
         hex6 = ColorPicker.get(self, self.book, current, title, allow_none=False)
         return hex6 or None
+
+    def edit_sheet_layout(self):
+        if self.current_ws() is not None:
+            SheetLayoutDialog(self).exec()
 
     def edit_palette(self):
         if self.book is not None:

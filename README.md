@@ -33,6 +33,11 @@ still open everything Atlas saves.
   ROUNDUP, ROUNDDOWN, INT, ABS, SQRT, MOD, POWER, PI, IF, IFERROR, AND, OR, NOT,
   CONCAT, LEN, UPPER, LOWER, TRIM. Inserting or deleting rows and columns
   keeps every reference in step.
+- **Margins and spacing per sheet** (*Format → Sheet margins and spacing*):
+  a margin between the pane's edge and column A, cell padding (sides, and
+  top and bottom), and cell spacing between cells, like an old HTML table's
+  margin, cellpadding and cellspacing. Display only, so columns and formulas
+  stay the same.
 - **Themes**: Nord (default), Dracula and Snow. On dark themes, dark text that
   was written for a white page is shown lighter. That's display only; the
   file isn't changed.

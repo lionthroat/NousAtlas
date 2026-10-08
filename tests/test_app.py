@@ -178,3 +178,28 @@ assert 5 in w.book.meta["pinned_rows"]["Fauna"] and 6 in w.book.meta["pinned_row
 w.undo(); app.processEvents()
 assert g.rowy[5] - g.rowy[4] < 100
 print("OK resize")
+
+# ---- per-sheet margin, cell padding, cell spacing
+import atlas_dialogs as D
+w.open_sheet("Fauna"); app.processEvents()
+g = w.grid
+plain_x = g.x_of(1)
+dlg = D.SheetLayoutDialog(w)
+dlg.set_values((24, 10, 6, 3))           # live preview
+assert g.sheet_layout()["margin"] == 24
+dlg.accept()
+g._layout()
+assert g.x_of(1) == g.header_w + 24 and g.y_of(1) == g.header_h + 24
+rect = g.cell_rect(4, 1)
+assert rect.width() == g.colx[1] - g.colx[0] - 3          # the gap shows the sheet
+assert g.hit(QPoint(g.header_w + 5, g.y_of(6) + 2)) == (6, 1)   # a click in the margin lands on column A
+assert ws.column_dimensions["A"].width == book.sheet("Fauna").column_dimensions["A"].width
+w.grab().save(os.path.join(shot_dir, "spacing.png"))
+other = w.book.sheet("Flora")
+assert "Flora" not in w.book.meta["sheet_layout"]          # only this sheet
+w.undo(); g._layout()
+assert g.x_of(1) == plain_x
+w.redo(); g._layout()
+assert g.x_of(1) == g.header_w + 24
+w.rename_sheet = None
+print("OK spacing")
