@@ -503,6 +503,15 @@ class Book:
                 if fx.is_formula(cell.value):
                     cell.value = fx.shift_refs(cell.value, other.title, ws.title, axis, at, delta)
 
+        # rows sized by hand move with their rows
+        if axis == "row" and ws.title in self.meta.get("pinned_rows", {}):
+            moved = []
+            for r in self.meta["pinned_rows"][ws.title]:
+                span = shift(r, r)
+                if span:
+                    moved.append(span[0])
+            self.meta["pinned_rows"][ws.title] = sorted(set(moved))
+
         # maps whose grid sits after the change move with it
         info = self.meta["maps"].get(ws.title)
         if info:
@@ -555,6 +564,8 @@ class Book:
             group["sheets"] = [new if s == old else s for s in group["sheets"]]
         if old in self.meta["maps"]:
             self.meta["maps"][new] = self.meta["maps"].pop(old)
+        if old in self.meta.get("pinned_rows", {}):
+            self.meta["pinned_rows"][new] = self.meta["pinned_rows"].pop(old)
         if self.ranges is not None:
             self.ranges.rename_map(old, new)
 
@@ -569,6 +580,7 @@ class Book:
         for group in self.meta["groups"]:
             group["sheets"] = [s for s in group["sheets"] if s != title]
         self.meta["maps"].pop(title, None)
+        self.meta.get("pinned_rows", {}).pop(title, None)
         if self.ranges is not None:
             self.ranges.drop_map(title)
 
@@ -582,6 +594,8 @@ class Book:
                 group["sheets"].insert(group["sheets"].index(ws.title) + 1, new.title)
         if ws.title in self.meta["maps"]:
             self.meta["maps"][new.title] = dict(self.meta["maps"][ws.title])
+        if ws.title in self.meta.get("pinned_rows", {}):
+            self.meta["pinned_rows"][new.title] = list(self.meta["pinned_rows"][ws.title])
         return new
 
     # -- colours used anywhere (for the palette tools)

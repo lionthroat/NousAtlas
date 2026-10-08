@@ -200,10 +200,14 @@ class SheetView(QAbstractScrollArea):
         default_h = ws.sheet_format.defaultRowHeight or DEFAULT_ROW_HEIGHT
         rdims = ws.row_dimensions
         cap = self._compact_cap()
+        pinned = set(self.book.meta.get("pinned_rows", {}).get(ws.title, []))
         for r in range(1, self.nrows + 1):
             d = rdims.get(r)
             if d is not None and d.hidden:
                 h = 0
+            elif r in pinned:
+                # a height you set by hand is kept exactly, in either row mode
+                h = int(((d.height if d is not None and d.height else None) or default_h) * 96 / 72 * z)
             else:
                 stored = d.height if d is not None and d.height else None
                 base = (stored or default_h) * 96 / 72
@@ -684,7 +688,19 @@ class SheetView(QAbstractScrollArea):
         if isinstance(shown, fx.XlError):
             color = QColor(self.theme["danger"])
         p.setPen(color)
-        p.drawText(inner, int(hflag) | int(vflag) | wrap, text)
+        flags = int(hflag) | int(vflag) | wrap
+        if st.fill and clip.right() > rect.right():
+            # text spilling out of a coloured cell onto the bare sheet: inside
+            # the cell it keeps its colour, outside it's made readable on the canvas
+            p.setClipRect(rect.intersected(limit), Qt.ReplaceClip)
+            p.drawText(inner, flags, text)
+            outside = QRect(rect.right() + 1, clip.top(), clip.right() - rect.right(), clip.height())
+            p.setClipRect(outside.intersected(limit), Qt.ReplaceClip)
+            out_color = st.color or ("000000" if _lum(st.fill) > 0.35 else "FFFFFF")
+            if self.adapt_colors:
+                out_color = readable_on(out_color, self.theme["canvas"].lstrip("#").upper())
+            p.setPen(qcolor(out_color))
+        p.drawText(inner, flags, text)
         # a small mark when a compact row hides part of the text
         if st.wrap and self.row_mode == "compact":
             need = st.fm.boundingRect(QRect(0, 0, max(1, inner.width()), 100000), Qt.TextWordWrap, text).height()
@@ -1090,12 +1106,27 @@ class SheetView(QAbstractScrollArea):
                 d.width = round(max(0.5, (px / self.zoom - 5) / MDW), 2)
             else:
                 self.ws.row_dimensions[i].height = round(max(3, px / self.zoom * 72 / 96), 2)
+                self._pin(i)
         self.book.done("layout")
+
+    def _pin(self, row):
+        pinned = self.book.meta.setdefault("pinned_rows", {}).setdefault(self.ws.title, [])
+        if row not in pinned:
+            pinned.append(row)
+            pinned.sort()
 
     def autofit(self, axis, idx):
         if axis == "row":
+            # fit the row to all of its text, even in compact mode
+            self._layout()
+            default_h = (self.ws.sheet_format.defaultRowHeight or DEFAULT_ROW_HEIGHT) * 96 / 72
+            r1, c1, r2, c2 = self.selection()
+            rows = range(r1, r2 + 1) if (c1 == 1 and c2 >= self.ws.max_column and r1 <= idx <= r2) else [idx]
             self.book.begin([self.ws])
-            self.ws.row_dimensions[idx].height = None
+            for r in rows:
+                px = max(self._fit.get(r, 0), default_h)
+                self.ws.row_dimensions[r].height = round(px * 72 / 96, 2)
+                self._pin(r)
             self.book.done("layout")
             return
         best = 0

@@ -141,3 +141,40 @@ assert b2.ranges.get(name).level("MAP — Day One", 12, (10, 6)) == 3
 assert [g["name"] for g in b2.meta["groups"]] == ["Maps"]
 assert "Ranges" not in [ws.title for ws in w.sidebar_order()]      # Atlas writes it; hidden from the sidebar
 print("OK")
+
+# ---- resizing with the real mouse: drag a column edge, drag a row edge, double-click a row edge
+from PySide6.QtTest import QTest
+from PySide6.QtCore import QPoint
+w.open_sheet("Fauna")
+g = w.grid
+g.set_current(5, 3)
+app.processEvents()
+vp = g.viewport()
+ws = w.book.sheet("Fauna")
+# column C's right edge in the header
+x = g.x_of(3) + g.colx[3] - g.colx[2] - 1
+y = g.header_h // 2
+before = ws.column_dimensions["C"].width
+QTest.mousePress(vp, Qt.LeftButton, Qt.NoModifier, QPoint(x, y))
+QTest.mouseMove(vp, QPoint(x + 60, y))
+QTest.mouseRelease(vp, Qt.LeftButton, Qt.NoModifier, QPoint(x + 60, y))
+app.processEvents()
+after = ws.column_dimensions["C"].width
+assert after > before + 5, (before, after)
+assert g.colx[3] - g.colx[2] > 300          # and the grid shows it
+# row 6's bottom edge in the row header: drag it taller than compact allows
+yb = g.y_of(6) + g.rowy[6] - g.rowy[5] - 1
+QTest.mousePress(vp, Qt.LeftButton, Qt.NoModifier, QPoint(g.header_w // 2, yb))
+QTest.mouseMove(vp, QPoint(g.header_w // 2, yb + 120))
+QTest.mouseRelease(vp, Qt.LeftButton, Qt.NoModifier, QPoint(g.header_w // 2, yb + 120))
+app.processEvents()
+assert g.rowy[6] - g.rowy[5] > 150, g.rowy[6] - g.rowy[5]
+# double-click row 5's bottom edge: fits all its text (F5 is very long)
+yb = g.y_of(5) + g.rowy[5] - g.rowy[4] - 1
+QTest.mouseDClick(vp, Qt.LeftButton, Qt.NoModifier, QPoint(g.header_w // 2, yb))
+app.processEvents()
+assert g.rowy[5] - g.rowy[4] > 400, g.rowy[5] - g.rowy[4]
+assert 5 in w.book.meta["pinned_rows"]["Fauna"] and 6 in w.book.meta["pinned_rows"]["Fauna"]
+w.undo(); app.processEvents()
+assert g.rowy[5] - g.rowy[4] < 100
+print("OK resize")
