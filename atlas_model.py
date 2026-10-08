@@ -27,7 +27,7 @@ META_SHEET = "_NousAtlas"
 RANGES_SHEET = "Ranges"
 DEFAULT_COL_WIDTH = 8.43          # Excel's default, in "characters"
 DEFAULT_ROW_HEIGHT = 15.0         # points
-PER_SHEET_KEYS = ("pinned_rows", "sheet_layout")   # meta entries keyed by sheet title
+PER_SHEET_KEYS = ("pinned_rows", "sheet_layout", "square_notes")   # meta entries keyed by sheet title
 
 
 # ---------------------------------------------------------------- colours
@@ -259,6 +259,7 @@ class Book:
         self.dirty = False
         self.calc = fx.Calc(self.raw, lambda: self.wb.sheetnames)
         self.listeners = []         # called after any change: fn(kind)
+        self.version = 0            # goes up on every change (for caches)
         for ws in self.wb.worksheets:
             normalise_columns(ws)
         self._load_meta()
@@ -373,6 +374,7 @@ class Book:
         self.redo_stack.clear()
 
     def done(self, kind="edit"):
+        self.version += 1
         self.dirty = True
         self.calc.invalidate()
         self.notify(kind)
@@ -389,6 +391,7 @@ class Book:
         snap = src.pop()
         dst.append(Snapshot(self, [s.ws for s in snap.sheets]))
         snap.restore(self)
+        self.version += 1
         self.dirty = True
         self.calc.invalidate()
         self.notify("undo")
@@ -561,6 +564,11 @@ class Book:
             for cell in other._cells.values():
                 if fx.is_formula(cell.value):
                     cell.value = fx.rename_sheet_refs(cell.value, old, new)
+                link = getattr(cell, "_hyperlink", None)
+                if link is not None and link.location:
+                    moved = fx.rename_sheet_refs("=" + link.location, old, new)[1:]
+                    if moved != link.location:
+                        link.location = moved
         for group in self.meta["groups"]:
             group["sheets"] = [new if s == old else s for s in group["sheets"]]
         if old in self.meta["maps"]:

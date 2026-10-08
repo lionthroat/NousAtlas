@@ -56,6 +56,8 @@ def stylesheet(t):
     QTreeWidget, QListWidget, QTableWidget {{ background: {t['panel']}; border: none; outline: none; }}
     QTreeWidget::item, QListWidget::item {{ padding: 3px 2px; border-radius: 4px; }}
     QTreeWidget::item:selected, QListWidget::item:selected {{ background: {t['select']}; color: {t['text']}; }}
+    QTreeView {{ show-decoration-selected: 0; }}
+    QTreeView::branch, QTreeView::branch:selected, QTreeView::branch:hover {{ background: transparent; }}
     QTreeWidget::item:hover, QListWidget::item:hover {{ background: {t['panel2']}; }}
     QHeaderView::section {{ background: {t['panel']}; color: {t['muted']}; border: none; padding: 3px; }}
     QMenu {{ background: {t['panel']}; border: 1px solid {t['border']}; padding: 4px; }}

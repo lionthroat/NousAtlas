@@ -59,6 +59,20 @@ automatically. Open one and use the **Ranges** tab:
   “…”*. After that, selecting that row shows a button that jumps straight to
   its range on the map.
 
+## Square cards
+
+Hover over a map square for a card listing what's there: **places** (any row
+that links to the square, such as a Gazetteer row whose coordinates link to
+G6), **life** (range layers painted there, labelled by the sheet each one
+is written up on), and a **note** for the square. Click anything in the
+card to go there; Alt+← comes back. Select a square to see the same card in
+the Cell panel and edit its note there.
+
+Links draw as buttons. Right-click a square like `G6` (or a whole column of
+them) → *Link to a map*. Following a link pulses a ring around the square
+it lands on. On maps, the selection is a two-tone ring that shows up on any
+colour.
+
 Ranges are saved in a plain sheet called **Ranges** (Creature | Map | Times |
 Abundance | Squares | Colour), with squares written like `I6` or `G9:K12`.
 Atlas rewrites that sheet on save and hides it from the sidebar (*View → Show

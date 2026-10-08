@@ -85,6 +85,7 @@ class SheetView(QAbstractScrollArea):
     linkActivated = Signal(str)        # an internal "#Sheet!A1" or external URL
     zoomChanged = Signal(float)
     contextRequested = Signal(object)  # a QMenu to add to before it pops up
+    cellHovered = Signal(int, int, object)   # row, col, global position (0s = off the cells)
 
     def __init__(self, theme):
         super().__init__()
@@ -113,6 +114,9 @@ class SheetView(QAbstractScrollArea):
         self._covered = {}
         self._region = QRect()
         self.pad_x, self.pad_y, self.gap = PAD_X, PAD_Y, 0
+        self.ring_selection = False      # set on map sheets
+        self.beacon = None
+        self.beacon_phase = None
         self.ox = self.oy = 0
         self._spill_to = 0
         self.clip = None                # set by the window: shared clipboard
@@ -774,7 +778,18 @@ class SheetView(QAbstractScrollArea):
         vflag = {"top": Qt.AlignTop, "center": Qt.AlignVCenter}.get(st.valign, Qt.AlignBottom)
         flags = int(hflag) | int(vflag) | (int(Qt.TextWordWrap) if st.wrap else 0)
         box = st.fm.boundingRect(inner, flags, text)
-        return box.adjusted(-6, -2, 6, 2).intersected(rect.adjusted(1, 1, -1, -1))
+        z = self.zoom
+        pill = box.adjusted(-int(11 * z), -int(5 * z), int(11 * z), int(5 * z))
+        min_w, min_h = int(40 * z), int(24 * z)
+        if pill.width() < min_w:
+            pill.adjust(-(min_w - pill.width()) // 2, 0, (min_w - pill.width() + 1) // 2, 0)
+        if pill.height() < min_h:
+            pill.adjust(0, -(min_h - pill.height()) // 2, 0, (min_h - pill.height() + 1) // 2)
+        return pill.intersected(rect.adjusted(2, 2, -2, -2))
+
+    def link_hit(self, r, c, pos):
+        """The button's clickable area: a little bigger than what's drawn."""
+        return self.link_rect(r, c).adjusted(-6, -6, 6, 6).intersected(self.cell_rect(r, c)).contains(pos)
 
     def selection(self):
         (r1, c1), (r2, c2) = self.anchor, self.cur
@@ -809,8 +824,43 @@ class SheetView(QAbstractScrollArea):
             for part in area:
                 p.fillRect(part, fill)
         p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(acc, 2))
-        p.drawRect(sel.adjusted(0, 0, -1, -1))
+        if self.ring_selection:
+            # two-tone ring: reads on any colour
+            p.setPen(QPen(QColor(20, 20, 26), 5))
+            p.drawRect(sel.adjusted(1, 1, -2, -2))
+            p.setPen(QPen(QColor(255, 255, 255), 2))
+            p.drawRect(sel.adjusted(1, 1, -2, -2))
+        else:
+            p.setPen(QPen(acc, 2))
+            p.drawRect(sel.adjusted(0, 0, -1, -1))
+        if self.beacon is not None and self.beacon_phase is not None:
+            br = self.cell_rect(*self.beacon)
+            grow = int(4 + 22 * self.beacon_phase)
+            ring = br.adjusted(-grow, -grow, grow, grow)
+            color = QColor(self.theme["find"])
+            color.setAlpha(int(255 * (1 - self.beacon_phase)))
+            p.setPen(QPen(color, 4))
+            p.drawRoundedRect(ring, 6, 6)
+
+    def flash(self, r, c):
+        """Pulse a ring around a cell a few times (after following a link)."""
+        from PySide6.QtCore import QVariantAnimation
+        self.beacon = (r, c)
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(700)
+        anim.setLoopCount(3)
+        def step(v):
+            self.beacon_phase = float(v)
+            self.viewport().update()
+        def end():
+            self.beacon_phase = None
+            self.viewport().update()
+        anim.valueChanged.connect(step)
+        anim.finished.connect(end)
+        anim.start(QVariantAnimation.DeleteWhenStopped)
+        self._beacon_anim = anim
 
     def _is_single_merge(self, r1, c1, r2, c2):
         return self._merges.get((r1, c1)) == (r2, c2)
@@ -1053,7 +1103,7 @@ class SheetView(QAbstractScrollArea):
         cell = self.ws._cells.get((row, col))
         target = link_target(cell)
         if target and not (e.modifiers() & Qt.ShiftModifier):
-            on_button = self.link_rect(row, col).contains(pos)
+            on_button = self.link_hit(row, col, pos)
             if on_button or e.modifiers() & Qt.ControlModifier:
                 self.linkActivated.emit(target)
                 return
@@ -1080,10 +1130,13 @@ class SheetView(QAbstractScrollArea):
                 row, col = self.hit(pos)
                 cell = self.ws._cells.get((row, col)) if row and col else None
                 target = link_target(cell)
-                if target and self.link_rect(row, col).contains(pos):
+                if target and self.link_hit(row, col, pos):
                     self.viewport().setCursor(Qt.PointingHandCursor)
                     where = target[1:] if target.startswith("#") else target
                     tip = f"Go to {where}"
+            if self.ws is not None and not edge:
+                hr, hc = self.hit(pos)
+                self.cellHovered.emit(hr, hc, self.viewport().mapToGlobal(pos))
             if tip != self.viewport().toolTip():
                 self.viewport().setToolTip(tip)
             if self.tool is not None:
@@ -1139,6 +1192,10 @@ class SheetView(QAbstractScrollArea):
         if row and col and (self.tool is None or not self.tool.active()):
             self.set_current(row, col)
             self.start_edit()
+
+    def leaveEvent(self, e):
+        super().leaveEvent(e)
+        self.cellHovered.emit(0, 0, None)
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:

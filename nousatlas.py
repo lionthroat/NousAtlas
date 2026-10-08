@@ -29,6 +29,7 @@ from openpyxl.worksheet.hyperlink import Hyperlink
 import atlas_formula as fx
 import atlas_model as model
 import atlas_ranges as ranges
+import atlas_squares as squares
 from atlas_dialogs import (ColorPicker, PaletteDialog, RemapDialog, SheetLayoutDialog,
                            SuggestStylesDialog, swatch_icon)
 from atlas_grid import SheetView, link_target
@@ -217,6 +218,59 @@ class FontBox(QComboBox):
             self.fontChosen.emit(match)
 
 
+# ---------------------------------------------------------------- square card
+
+
+class HoverCard(QFrame):
+    """The card that appears over a map square. You can move onto it and
+    click what's in it."""
+
+    def __init__(self, window):
+        super().__init__(window, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus)
+        self.window = window
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setObjectName("card")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        self.label = QLabel()
+        self.label.setTextFormat(Qt.RichText)
+        self.label.setWordWrap(True)
+        self.label.setMinimumWidth(240)
+        self.label.setMaximumWidth(380)
+        self.label.setOpenExternalLinks(False)
+        self.label.linkActivated.connect(self.clicked)
+        lay.addWidget(self.label)
+        self.key = None
+
+    def show_for(self, key, html_text, gpos):
+        self.key = key
+        self.label.setText(html_text)
+        self.adjustSize()
+        screen = QApplication.screenAt(gpos) or QApplication.primaryScreen()
+        area = screen.availableGeometry()
+        x, y = gpos.x() + 16, gpos.y() + 18
+        if x + self.width() > area.right():
+            x = gpos.x() - self.width() - 12
+        if y + self.height() > area.bottom():
+            y = gpos.y() - self.height() - 12
+        self.move(x, y)
+        self.show()
+        self.raise_()
+
+    def clicked(self, link):
+        self.hide()
+        self.key = None
+        self.window.go_to_href(link)
+
+    def leaveEvent(self, e):
+        super().leaveEvent(e)
+        self.window.card_timer_hide.start()
+
+    def enterEvent(self, e):
+        super().enterEvent(e)
+        self.window.card_timer_hide.stop()
+
+
 # ---------------------------------------------------------------- sidebar
 
 
@@ -400,6 +454,24 @@ class Inspector(QWidget):
         self.link.setObjectName("muted")
         self.link.setWordWrap(True)
         lay.addWidget(self.link)
+        self.square_box = QWidget()
+        sb = QVBoxLayout(self.square_box)
+        sb.setContentsMargins(0, 6, 0, 0)
+        sb.setSpacing(4)
+        self.square_card = QLabel()
+        self.square_card.setTextFormat(Qt.RichText)
+        self.square_card.setWordWrap(True)
+        self.square_card.linkActivated.connect(lambda link: self.window.go_to_href(link))
+        sb.addWidget(self.square_card)
+        lbl = QLabel("Note for this square")
+        lbl.setObjectName("faint")
+        sb.addWidget(lbl)
+        self.square_note = BigEdit(self.commit_square_note, self.load)
+        self.square_note.setPlaceholderText("Anything about this square. Shows on its hover card.")
+        self.square_note.setMaximumHeight(110)
+        sb.addWidget(self.square_note)
+        lay.addWidget(self.square_box)
+        self.square_key = None
         self.ranges_box = QWidget()
         rb = QVBoxLayout(self.ranges_box)
         rb.setContentsMargins(0, 6, 0, 0)
@@ -422,6 +494,7 @@ class Inspector(QWidget):
         self.loading = True
         try:
             if ws is None:
+                self.square_box.hide()
                 self.where.setText("")
                 self.text.setPlainText("")
                 self.note.setPlainText("")
@@ -462,8 +535,41 @@ class Inspector(QWidget):
             else:
                 self.link.hide()
             self.load_ranges(ws, r)
+            self.load_square(ws, r, c)
         finally:
             self.loading = False
+
+    def load_square(self, ws, r, c):
+        w = self.window
+        info = w.book.meta["maps"].get(ws.title)
+        sq = ranges.map_square(info, r, c) if info else None
+        self.square_key = (ws.title, ranges.square_label(sq)) if sq else None
+        if sq is None:
+            self.square_box.hide()
+            self.text.setMaximumHeight(16777215)
+            return
+        cd = w.squares.card(ws.title, sq)
+        self.square_card.setText(squares.card_html(cd, w.theme, ws.title, with_note=False))
+        self.text.setMaximumHeight(70)          # map squares hold a short mark; make room for the card
+        self.square_note.setPlainText(cd["note"])
+        self.square_box.show()
+
+    def commit_square_note(self):
+        w = self.window
+        if self.loading or self.square_key is None or w.book is None:
+            return
+        map_title, label = self.square_key
+        old = w.book.meta.get("square_notes", {}).get(map_title, {}).get(label, "")
+        new = self.square_note.toPlainText().strip()
+        if new == old:
+            return
+        w.book.begin([])
+        notes = w.book.meta.setdefault("square_notes", {}).setdefault(map_title, {})
+        if new:
+            notes[label] = new
+        else:
+            notes.pop(label, None)
+        w.book.done("notes")
 
     def load_ranges(self, ws, row):
         w = self.window
@@ -678,6 +784,18 @@ class MainWindow(QMainWindow):
         self.grid.linkActivated.connect(self.follow_link)
         self.grid.zoomChanged.connect(lambda z: self.zoom_label.setText(f"{round(z * 100)}%"))
         self.grid.contextRequested.connect(self.grid_menu)
+        self.grid.cellHovered.connect(self.on_hover)
+        self.squares = None
+        self.card = HoverCard(self)
+        self.card_timer_show = QTimer(self)
+        self.card_timer_show.setSingleShot(True)
+        self.card_timer_show.setInterval(350)
+        self.card_timer_show.timeout.connect(self.show_card)
+        self.card_timer_hide = QTimer(self)
+        self.card_timer_hide.setSingleShot(True)
+        self.card_timer_hide.setInterval(300)
+        self.card_timer_hide.timeout.connect(self.hide_card)
+        self._hover = None
 
         self.sidebar = Sidebar(self)
         self.inspector = Inspector(self)
@@ -1037,6 +1155,7 @@ class MainWindow(QMainWindow):
         self.book = book
         book.listeners.append(self.on_book_changed)
         book.ranges = ranges.Ranges.load(book)
+        self.squares = squares.SquareIndex(book, skip_sheet=self.read_only_sheet)
         self.prepare_meta(book)
         self.history, self.future = [], []
         self.range_state = ranges.ViewState()
@@ -1319,10 +1438,66 @@ class MainWindow(QMainWindow):
         elif not same:
             self.grid.set_sheet(self.book, self.book.sheet(title), cur)
         self.sidebar.select_sheet(title)
+        self.grid.ring_selection = title in self.book.meta["maps"]
+        self.card.hide()
         if self.find_bar.isVisible():
             self.find_bar.update_marks()
         self.ranges_panel.refresh()
         self.update_enabled()
+
+    # ------------------------------------------------------------ square cards
+    def on_hover(self, row, col, gpos):
+        ws = self.current_ws()
+        info = self.book.meta["maps"].get(ws.title) if (ws is not None and self.book is not None) else None
+        sq = ranges.map_square(info, row, col) if (info and row and col) else None
+        key = (ws.title, sq) if sq else None
+        if key is None:
+            self.card_timer_show.stop()
+            if self.card.isVisible():
+                self.card_timer_hide.start()
+            self._hover = None
+            return
+        if self.card.isVisible() and self.card.key == key:
+            self.card_timer_hide.stop()
+            return
+        self._hover = (key, gpos)
+        if self.card.isVisible():
+            self.show_card()                 # already showing: follow the mouse right away
+        else:
+            self.card_timer_show.start()
+
+    def show_card(self):
+        if self._hover is None or self.book is None or self.grid.tool.active() and self.grid._drag:
+            return
+        (map_title, sq), gpos = self._hover
+        if not self.squares.has_content(map_title, sq):
+            self.card.hide()
+            return
+        cd = self.squares.card(map_title, sq)
+        self.card.setStyleSheet(f"QFrame#card {{ background: {self.theme['panel']}; border: 1px solid {self.theme['border']}; "
+                                f"border-radius: 8px; }} QLabel {{ background: transparent; }}")
+        self.card.show_for((map_title, sq), squares.card_html(cd, self.theme, map_title), gpos)
+
+    def hide_card(self):
+        from PySide6.QtGui import QCursor
+        if self.card.isVisible() and self.card.geometry().contains(QCursor.pos()):
+            return
+        self.card.hide()
+        self.card.key = None
+
+    def go_to_href(self, link):
+        target = squares.parse_href(link)
+        if target is None:
+            self.follow_link(link)
+            return
+        sheet, r, c = target
+        self.go_to(sheet, r, c)
+
+    def go_to(self, sheet, r, c):
+        self.card.hide()
+        self.open_sheet(sheet, (r, c))
+        self.grid.flash(r, c)
+        self.statusBar().showMessage("Alt+← goes back.", 4000)
 
     def go_back(self):
         if not self.history:
@@ -1353,10 +1528,9 @@ class MainWindow(QMainWindow):
             sheet = sheet.strip("'").replace("''", "'") or self.ws_title
             try:
                 ref = fx.Ref.parse(cell)
-                self.open_sheet(sheet, (ref.r1, ref.c1))
+                self.go_to(sheet, ref.r1, ref.c1)
             except Exception:
                 self.open_sheet(sheet)
-            self.statusBar().showMessage("Alt+← goes back.", 4000)
         else:
             QDesktopServices.openUrl(QUrl(target))
 
@@ -1503,6 +1677,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ book changes
     def on_book_changed(self, kind):
+        if self.book is not None and self.ws_title:
+            self.grid.ring_selection = self.ws_title in self.book.meta["maps"]
         if self.current_ws() is None and self.book is not None:
             order = self.sidebar_order()
             self.ws_title = None

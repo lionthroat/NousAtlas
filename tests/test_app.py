@@ -274,3 +274,42 @@ assert w.save()
 wb = openpyxl.load_workbook(path)
 assert wb["Gazetteer"]["D5"].hyperlink.location == "'MAP — Day One'!J5"
 print("OK links")
+
+# ---- square cards: places from links, life from range layers, notes; hover; click through
+import atlas_squares as SQ
+day = "MAP — Day One"
+gz = w.book.sheet("Gazetteer")
+w.open_sheet("Gazetteer"); w.grid.select_range(5, 4, 20, 4); w.link_to_square(day)
+row_m6 = next(r for r in range(5, 25) if gz.cell(r, 1).value == "m6")
+assert gz.cell(row_m6, 4).value.startswith("G6")
+fauna = w.book.sheet("Fauna")
+jay_row = next(r for r in range(1, 40) if fauna.cell(r, 1).value == "Tally jay")
+w.book.begin([]); jays = w.book.ranges.add("Tally jay"); w.book.ranges.paint(jays, day, set(R.DAY), [(7, 6)], 3); w.book.done("ranges")
+info = w.book.meta["maps"][day]
+cd = w.squares.card(day, (7, 6))
+assert any(lbl.startswith("m6") and "Scout's Transect" in lbl for _, _, _, lbl in cd["places"]), cd["places"]
+jay = [e for e in cd["life"] if e[0].name == "Tally jay"]
+assert jay and jay[0][3] == ("Fauna", jay_row, 1) and jay[0][2] == R.DAY, cd["life"]
+html_text = SQ.card_html(cd, w.theme, day)
+assert "Fauna: " in html_text and "Scout&#x27;s Transect" in html_text, html_text
+# note from the Cell panel
+w.open_sheet(day); r6, c6 = R.square_cell(info, (7, 6)); w.grid.set_current(r6, c6)
+assert w.inspector.square_box.isVisible() or not w.inspector.isVisible()
+w.inspector.square_note.setPlainText("The posts are metal; the jays love them."); w.inspector.commit_square_note()
+assert w.squares.card(day, (7, 6))["note"].startswith("The posts")
+# hover shows the card; clicking the jay goes to its Fauna row
+w.grid.ring_selection
+w.on_hover(r6, c6, w.grid.viewport().mapToGlobal(w.grid.cell_rect(r6, c6).center()))
+w.show_card(); app.processEvents()
+assert w.card.isVisible() and w.card.key == (day, (7, 6))
+w.card.clicked(SQ.href("Fauna", jay_row, 1))
+assert w.ws_title == "Fauna" and w.grid.cur == (jay_row, 1) and not w.card.isVisible()
+w.go_back(); assert w.ws_title == day
+# renaming the map keeps the links pointing at it
+w.book.begin(); w.book.rename_sheet(w.book.sheet(day), "Redsaint Map"); w.book.done("sheets")
+w.ws_title = "Redsaint Map" if w.ws_title == day else w.ws_title
+assert gz["D5"].hyperlink.location == "'Redsaint Map'!J5", gz["D5"].hyperlink.location
+assert w.squares.card("Redsaint Map", (7, 6))["note"].startswith("The posts")
+assert w.save()
+wb = openpyxl.load_workbook(path)
+print("OK squares")
