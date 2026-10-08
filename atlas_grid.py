@@ -12,7 +12,7 @@ import io
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QKeySequence,
-                           QPainter, QPen, QPolygon, QTextOption)
+                           QPainter, QPen, QPolygon, QRegion, QTextOption)
 from PySide6.QtWidgets import (QAbstractScrollArea, QApplication, QMenu,
                                QPlainTextEdit)
 from openpyxl.cell.cell import MergedCell
@@ -755,15 +755,15 @@ class SheetView(QAbstractScrollArea):
         y2 = self.y_of(r2) + self.rowy[r2] - self.rowy[r2 - 1]
         sel = QRect(x1, y1, x2 - x1, y2 - y1)
         if (r1, c1) != (r2, c2) and not self._is_single_merge(r1, c1, r2, c2):
+            # tint the selection, leaving the active cell (where typing goes) clear
             fill = QColor(acc)
             fill.setAlpha(45)
-            p.fillRect(sel, fill)
+            area = QRegion(sel).subtracted(QRegion(self.cell_rect(*self.cur)))
+            for part in area:
+                p.fillRect(part, fill)
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(acc, 2))
         p.drawRect(sel.adjusted(0, 0, -1, -1))
-        if (r1, c1) != (r2, c2) and not self._is_single_merge(r1, c1, r2, c2):
-            p.setPen(QPen(acc, 1))
-            p.drawRect(self.cell_rect(*self.cur).adjusted(2, 2, -3, -3))
 
     def _is_single_merge(self, r1, c1, r2, c2):
         return self._merges.get((r1, c1)) == (r2, c2)
