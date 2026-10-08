@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 
 import atlas_formula as fx
 from atlas_model import (DEFAULT_COL_WIDTH, DEFAULT_ROW_HEIGHT, resolve_color)
-from atlas_theme import qcolor, readable_on
+from atlas_theme import contrast, qcolor, readable_on
 
 PAD_X, PAD_Y = 4, 2
 HEADER_H = 22
@@ -490,7 +490,7 @@ class SheetView(QAbstractScrollArea):
                 p.restore()
         # freeze lines
         if self.frow > 1 or self.fcol > 1:
-            p.setPen(QPen(QColor(t["border"]), 2))
+            p.setPen(QPen(QColor(t["border"]), 1))
             if self.frow > 1:
                 p.drawLine(hw, hh + fh, vp.width(), hh + fh)
             if self.fcol > 1:
@@ -689,17 +689,34 @@ class SheetView(QAbstractScrollArea):
             color = QColor(self.theme["danger"])
         p.setPen(color)
         flags = int(hflag) | int(vflag) | wrap
-        if st.fill and clip.right() > rect.right():
-            # text spilling out of a coloured cell onto the bare sheet: inside
-            # the cell it keeps its colour, outside it's made readable on the canvas
+        if clip.right() > rect.right():
+            # text spilling past its cell: over each neighbour it takes the
+            # colour that reads on that neighbour (its fill, or the bare sheet)
             p.setClipRect(rect.intersected(limit), Qt.ReplaceClip)
             p.drawText(inner, flags, text)
-            outside = QRect(rect.right() + 1, clip.top(), clip.right() - rect.right(), clip.height())
-            p.setClipRect(outside.intersected(limit), Qt.ReplaceClip)
-            out_color = st.color or ("000000" if _lum(st.fill) > 0.35 else "FFFFFF")
-            if self.adapt_colors:
-                out_color = readable_on(out_color, self.theme["canvas"].lstrip("#").upper())
-            p.setPen(qcolor(out_color))
+            base = st.color or ("000000" if st.fill and _lum(st.fill) > 0.35 else None)
+            canvas = self.theme["canvas"].lstrip("#").upper()
+            cc = c + 1
+            while cc <= self.ncols and self.x_of(cc) <= clip.right():
+                x = self.x_of(cc)
+                seg = QRect(x, clip.top(), self.colx[cc] - self.colx[cc - 1], clip.height())
+                nb = self.ws._cells.get((r, cc))
+                nfill = self.style_of(nb).fill if nb is not None else None
+                if nfill:
+                    col = base or ("000000" if _lum(nfill) > 0.35 else "FFFFFF")
+                    if contrast(col, nfill) < 2.0:
+                        col = "000000" if _lum(nfill) > 0.35 else "FFFFFF"
+                    pen = qcolor(col)
+                elif base is None:
+                    pen = QColor(self.theme["text"])
+                else:
+                    pen = qcolor(readable_on(base, canvas) if self.adapt_colors else base)
+                p.setClipRect(seg.intersected(clip).intersected(limit), Qt.ReplaceClip)
+                p.setPen(pen)
+                p.drawText(inner, flags, text)
+                cc += 1
+            p.restore()
+            return
         p.drawText(inner, flags, text)
         # a small mark when a compact row hides part of the text
         if st.wrap and self.row_mode == "compact":
@@ -744,7 +761,7 @@ class SheetView(QAbstractScrollArea):
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(acc, 2))
         p.drawRect(sel.adjusted(0, 0, -1, -1))
-        if (r1, c1) != (r2, c2):
+        if (r1, c1) != (r2, c2) and not self._is_single_merge(r1, c1, r2, c2):
             p.setPen(QPen(acc, 1))
             p.drawRect(self.cell_rect(*self.cur).adjusted(2, 2, -3, -3))
 
