@@ -203,3 +203,21 @@ w.redo(); g._layout()
 assert g.x_of(1) == g.header_w + 24
 w.rename_sheet = None
 print("OK spacing")
+
+# ---- font dropdown: fonts this workbook uses come first
+fb = w.font_box
+fb.fill()
+labels = [fb.itemText(i) for i in range(fb.count())]
+assert labels[0] == "In this workbook", labels[:5]
+used_end = labels.index("All fonts")
+assert "Arial" in labels[1:used_end] and labels.index("Arial") < used_end
+w.open_sheet("Flora"); w.grid.set_current(3, 2)
+idx = fb.findData("Georgia") if fb.findData("Georgia") >= 0 else fb.findData(fb.families[0])
+name = fb.itemData(idx)
+fb.activated.emit(idx)
+assert w.book.sheet("Flora").cell(3, 2).font.name == name
+fb.fill()
+assert name in [fb.itemText(i) for i in range(1, [fb.itemText(i) for i in range(fb.count())].index("All fonts"))]
+fb.setEditText("times new roman"); fb.lineEdit().returnPressed.emit()
+assert w.book.sheet("Flora").cell(3, 2).font.name == "Times New Roman"
+print("OK fonts")

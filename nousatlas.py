@@ -10,9 +10,9 @@ import copy
 import os
 import sys
 
-from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices,
-                           QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap)
+                           QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QFileDialog, QFontComboBox, QFrame,
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -125,6 +125,94 @@ def draw_icon(kind, color="#d8dee9", accent=None):
 def app_icon():
     path = resource_path("icon.ico")
     return QIcon(path) if os.path.exists(path) else QIcon()
+
+
+# ---------------------------------------------------------------- font picker
+
+
+class FontBox(QComboBox):
+    """Fonts with the ones this workbook uses first, each shown in itself.
+    Type a name and press Enter to pick it."""
+
+    fontChosen = Signal(str)
+
+    def __init__(self, used_fn):
+        super().__init__()
+        self.used_fn = used_fn
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.NoInsert)
+        self.setMaxVisibleItems(24)
+        self.view().setMinimumWidth(300)
+        self.view().setTextElideMode(Qt.ElideNone)
+        self.families = sorted(set(QFontDatabase.families()), key=str.lower)
+        self._filled_for = None
+        self.lineEdit().returnPressed.connect(self._typed)
+        self.activated.connect(self._picked)
+        comp = self.completer()
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
+        comp.setFilterMode(Qt.MatchStartsWith)
+
+    def _header(self, text):
+        self.addItem(text)
+        it = self.model().item(self.count() - 1)
+        it.setEnabled(False)
+        it.setSelectable(False)
+        f = QFont(self.font())
+        f.setBold(True)
+        f.setPointSizeF(max(7.0, f.pointSizeF() - 1))
+        it.setFont(f)
+
+    def _font_item(self, name):
+        self.addItem(name, name)
+        it = self.model().item(self.count() - 1)
+        f = QFont(name)
+        f.setPointSizeF(self.font().pointSizeF() + 1)
+        it.setFont(f)
+
+    def fill(self):
+        used = [n for n in self.used_fn()]
+        if used == self._filled_for:
+            return
+        text = self.currentText()
+        self.blockSignals(True)
+        self.clear()
+        if used:
+            self._header("In this workbook")
+            for name in used:
+                self._font_item(name)
+            self.insertSeparator(self.count())
+            self._header("All fonts")
+        for name in self.families:
+            self._font_item(name)
+        self.setEditText(text)
+        self.blockSignals(False)
+        self._filled_for = used
+
+    def showPopup(self):
+        self.fill()
+        name = self.currentText()
+        idx = self.findData(name)
+        if idx >= 0:
+            self.setCurrentIndex(idx)
+        super().showPopup()
+
+    def show_name(self, name):
+        self.blockSignals(True)
+        self.setEditText(name)
+        self.blockSignals(False)
+
+    def _picked(self, idx):
+        name = self.itemData(idx)
+        if name:
+            self.show_name(name)
+            self.fontChosen.emit(name)
+
+    def _typed(self):
+        text = self.currentText().strip()
+        match = next((f for f in self.families if f.lower() == text.lower()), None)
+        if match:
+            self.show_name(match)
+            self.fontChosen.emit(match)
 
 
 # ---------------------------------------------------------------- sidebar
@@ -690,9 +778,9 @@ class MainWindow(QMainWindow):
         tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
         self.toolbar = tb
-        self.font_box = QFontComboBox()
-        self.font_box.setMaximumWidth(180)
-        self.font_box.currentFontChanged.connect(lambda f: self.set_font_attr(name=f.family()))
+        self.font_box = FontBox(self.fonts_in_use)
+        self.font_box.setMaximumWidth(200)
+        self.font_box.fontChosen.connect(lambda name: self.set_font_attr(name=name))
         tb.addWidget(self.font_box)
         self.size_box = QComboBox()
         self.size_box.setEditable(True)
@@ -1510,9 +1598,7 @@ class MainWindow(QMainWindow):
             v = (al.vertical if al else None) or "bottom"
             for k, a in self.valign.items():
                 a.setChecked(v == k)
-            self.font_box.blockSignals(True)
-            self.font_box.setCurrentFont(QFont((font.name if font and font.name else None) or "Calibri"))
-            self.font_box.blockSignals(False)
+            self.font_box.show_name((font.name if font and font.name else None) or "Calibri")
             size = (font.sz if font and font.sz else None) or 11
             self.size_box.setEditText(f"{size:g}")
             ws = self.current_ws()
@@ -1669,6 +1755,20 @@ class MainWindow(QMainWindow):
     def pick_color(self, current, title):
         hex6 = ColorPicker.get(self, self.book, current, title, allow_none=False)
         return hex6 or None
+
+    def fonts_in_use(self):
+        """Font names used in the workbook, most used first."""
+        if self.book is None:
+            return []
+        counts = {}
+        for ws in self.book.user_sheets():
+            for cell in ws._cells.values():
+                if cell.value is None and not cell.has_style:
+                    continue
+                f = cell.font
+                name = (f.name if f is not None and f.name else None) or "Calibri"
+                counts[name] = counts.get(name, 0) + 1
+        return sorted(counts, key=lambda n: -counts[n])
 
     def edit_sheet_layout(self):
         if self.current_ws() is not None:
