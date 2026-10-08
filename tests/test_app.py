@@ -233,3 +233,44 @@ g.set_current(5, 2); w.set_freeze("here"); assert gz.freeze_panes == "B5"
 w.set_freeze("row"); assert gz.freeze_panes == "A2"
 assert w.font_box.minimumWidth() >= 200
 print("OK freeze")
+
+# ---- editing a cell whose text spills: the editor shows all of it
+from PySide6.QtWidgets import QMenu
+w.open_sheet("Gazetteer"); g = w.grid
+g.set_current(1, 1); g.start_edit(); app.processEvents()
+assert g.editor.toPlainText().startswith("GAZETTEER")
+assert g.editor.width() > g.cell_rect(1, 1).width() * 3, (g.editor.width(), g.cell_rect(1, 1).width())
+g.finish_edit(False)
+
+# ---- links as buttons: link the Cell column to the Day One map
+gz = w.book.sheet("Gazetteer")
+g.select_range(5, 4, 9, 4)
+w.link_to_square("MAP — Day One")
+assert gz["D5"].hyperlink.location == "'MAP — Day One'!J5", gz["D5"].hyperlink.location   # I1
+assert gz["D9"].hyperlink.location == "'MAP — Day One'!I14"                                  # H10
+g.set_current(3, 1); app.processEvents()
+g.ensure_visible(5, 4); app.processEvents()
+pill = g.link_rect(5, 4)
+QTest.mouseClick(g.viewport(), Qt.LeftButton, Qt.NoModifier, pill.center())
+app.processEvents()
+assert w.ws_title == "MAP — Day One" and g.cur == (5, 10), (w.ws_title, g.cur)
+w.go_back(); assert w.ws_title == "Gazetteer"
+# clicking beside the button selects the cell instead
+rect = g.cell_rect(5, 4); pill = g.link_rect(5, 4)
+beside = QPoint(rect.left() + 2, rect.top() + 2)
+assert not pill.contains(beside)
+QTest.mouseClick(g.viewport(), Qt.LeftButton, Qt.NoModifier, beside)
+assert w.ws_title == "Gazetteer" and g.cur == (5, 4)
+# the right-click menu offers follow / remove; Fauna names offer a range layer
+m = QMenu(); w.grid_menu(m)
+texts = [a.text() for a in m.actions()]
+assert "Follow link" in texts and "Remove link (keep the text)" in texts, texts
+w.remove_links(); assert gz["D5"].hyperlink is None and gz["D5"].value == "I1"
+w.undo(); assert gz["D5"].hyperlink is not None
+w.open_sheet("Fauna"); g.set_current(6, 1)
+m = QMenu(); w.grid_menu(m)
+assert any(a.text().startswith("Make a range layer for") for a in m.actions()), [a.text() for a in m.actions()]
+assert w.save()
+wb = openpyxl.load_workbook(path)
+assert wb["Gazetteer"]["D5"].hyperlink.location == "'MAP — Day One'!J5"
+print("OK links")

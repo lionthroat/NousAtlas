@@ -8,6 +8,7 @@ each creature or plant lives, by time of day). Files stay ordinary .xlsx.
 
 import copy
 import os
+import re
 import sys
 
 from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer, QUrl, Signal
@@ -23,13 +24,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 from openpyxl.cell.cell import MergedCell
 from openpyxl.comments import Comment
 from openpyxl.styles import NamedStyle
+from openpyxl.worksheet.hyperlink import Hyperlink
 
 import atlas_formula as fx
 import atlas_model as model
 import atlas_ranges as ranges
 from atlas_dialogs import (ColorPicker, PaletteDialog, RemapDialog, SheetLayoutDialog,
                            SuggestStylesDialog, swatch_icon)
-from atlas_grid import SheetView
+from atlas_grid import SheetView, link_target
 from atlas_model import Book
 from atlas_theme import THEMES, qcolor, stylesheet
 
@@ -453,7 +455,9 @@ class Inspector(QWidget):
             self.note.setPlainText(cell.comment.text if cell is not None and cell.comment else "")
             link = cell.hyperlink if cell is not None else None
             if link is not None and (link.target or link.location):
-                self.link.setText(f"Link: {link.target or '#' + link.location}  (Ctrl+click the cell)")
+                self.link.setText(f"Links to {link.target or link.location}. Click the button in the cell to go there; "
+                                  "click beside it (or use the arrow keys) to select the cell. Right-click → "
+                                  "Remove link turns it back into plain text.")
                 self.link.show()
             else:
                 self.link.hide()
@@ -952,6 +956,8 @@ class MainWindow(QMainWindow):
         fm.addAction(self.a_clear_fmt)
         fm.addSeparator()
         fm.addAction(self.act("Sheet margins and spacing…", self.edit_sheet_layout))
+        fm.addAction(self.act("Link squares to a map…", self.link_selection_dialog))
+        fm.addAction(self.act("Remove links (keep the text)", self.remove_links))
         fm.addSeparator()
         fm.addAction(self.act("Palette…", self.edit_palette))
         fm.addAction(self.act("Swap colours for your palette…", self.remap_colors))
@@ -1350,6 +1356,7 @@ class MainWindow(QMainWindow):
                 self.open_sheet(sheet, (ref.r1, ref.c1))
             except Exception:
                 self.open_sheet(sheet)
+            self.statusBar().showMessage("Alt+← goes back.", 4000)
         else:
             QDesktopServices.openUrl(QUrl(target))
 
@@ -2002,6 +2009,99 @@ class MainWindow(QMainWindow):
         self.book.done("structure")
         self.grid.set_current(r1, c1)
 
+    # ------------------------------------------------------------ links
+    SQUARE_RE = re.compile(r"\s*([A-Za-z]{1,2})(\d{1,3})(?![\d])")
+
+    def map_titles(self):
+        return [t for t in self.book.meta["maps"] if self.book.sheet(t) is not None]
+
+    def square_of(self, value):
+        """'I1' -> (9, 1); also takes the leading square of 'H10 + block'."""
+        if not isinstance(value, str):
+            return None
+        m = self.SQUARE_RE.match(value)
+        if not m:
+            return None
+        return fx.col_to_num(m.group(1)), int(m.group(2))
+
+    def link_cells(self, cells, location_for):
+        """Give cells internal links; location_for(cell) -> "'Sheet'!A1" or None."""
+        ws = self.current_ws()
+        self.book.begin([ws])
+        n = 0
+        for cell in cells:
+            loc = location_for(cell)
+            if loc:
+                cell.hyperlink = Hyperlink(ref=cell.coordinate, location=loc)
+                n += 1
+        if n:
+            self.book.done("format")
+        else:
+            self.book.undo_stack.pop()
+        return n
+
+    def link_to_square(self, map_title, cells=None):
+        info = self.book.meta["maps"][map_title]
+        cells = cells or self.selected_cells(create=False)
+        def loc(cell):
+            sq = self.square_of(cell.value)
+            if sq is None or not ranges.map_square(info, *ranges.square_cell(info, sq)):
+                return None
+            r, c = ranges.square_cell(info, sq)
+            return f"{fx.quote_sheet(map_title)}!{fx.num_to_col(c)}{r}"
+        n = self.link_cells(cells, loc)
+        self.statusBar().showMessage(f"Linked {n} cell{'s' if n != 1 else ''} to {map_title}." if n else
+                                     "Nothing in the selection looks like a map square (I6, G13…).", 6000)
+
+    def link_to_sheet(self, title):
+        self.link_cells([self.current_ws().cell(*self.grid.cur)], lambda cell: f"{fx.quote_sheet(title)}!A1")
+
+    def remove_links(self):
+        ws = self.current_ws()
+        if ws is None:
+            return
+        cells = [c for c in self.selected_cells(create=False) if c.hyperlink is not None]
+        if not cells:
+            return
+        self.book.begin([ws])
+        for cell in cells:
+            cell.hyperlink = None
+        self.book.done("format")
+
+    def add_link_actions(self, menu):
+        cell = self.current_cell()
+        menu.addSeparator()
+        target = link_target(cell)
+        if target:
+            menu.addAction("Follow link", lambda: self.follow_link(target))
+        if any(c.hyperlink is not None for c in self.selected_cells(create=False)):
+            menu.addAction("Remove link (keep the text)", self.remove_links)
+        maps = self.map_titles()
+        sq_cells = [c for c in self.selected_cells(create=False) if self.square_of(c.value)]
+        if sq_cells and maps:
+            label = (f"Link {cell.value.strip()} to a map" if len(sq_cells) == 1 and cell is not None and isinstance(cell.value, str)
+                     else f"Link these {len(sq_cells)} squares to a map")
+            sub = menu.addMenu(label)
+            for t in maps:
+                sub.addAction(t, lambda t=t: self.link_to_square(t, sq_cells))
+        sheets = menu.addMenu("Link to a sheet")
+        for ws in self.sidebar_order():
+            if ws.title != self.ws_title:
+                sheets.addAction(ws.title, lambda t=ws.title: self.link_to_sheet(t))
+
+    def link_selection_dialog(self):
+        if self.current_ws() is None:
+            return
+        maps = self.map_titles()
+        if not maps:
+            QMessageBox.information(self, "Link squares to a map", "This workbook has no map sheets yet.")
+            return
+        title, ok = QInputDialog.getItem(self, "Link squares to a map",
+                                         "Turn the squares in the selection (I6, G13…) into buttons that go to:",
+                                         maps, 0, False)
+        if ok:
+            self.link_to_square(title)
+
     def set_freeze(self, how):
         """Frozen rows/columns stay put while the rest scrolls (undoable)."""
         ws = self.current_ws()
@@ -2061,11 +2161,17 @@ class MainWindow(QMainWindow):
                 menu.addAction(f"Unfreeze panes (frozen at {ws.freeze_panes})", lambda: self.set_freeze(None))
             if (r, c) != (1, 1):
                 menu.addAction(f"Freeze above and left of {fx.num_to_col(c)}{r}", lambda: self.set_freeze("here"))
+        if not ro:
+            self.add_link_actions(menu)
         cell = self.current_cell()
-        if cell is not None and isinstance(cell.value, str) and cell.value.strip():
+        if cell is not None and isinstance(cell.value, str) and cell.value.strip() and not fx.is_formula(cell.value):
             menu.addSeparator()
             text = cell.value.strip().split("\n")[0][:40]
             menu.addAction(f"Find “{text}” everywhere", lambda: self.find_text(text))
+            name = cell.value.strip()
+            if (not ro and "\n" not in name and len(name) <= 60 and self.book.ranges.get(name) is None
+                    and ws.title not in self.book.meta["maps"] and self.map_titles()):
+                menu.addAction(f"Make a range layer for “{name}”", lambda: self.make_layer_for(name))
 
     # ------------------------------------------------------------ ranges
     def find_text(self, text):

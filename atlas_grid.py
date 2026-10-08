@@ -707,8 +707,19 @@ class SheetView(QAbstractScrollArea):
         color = self.text_color(st)
         if isinstance(shown, fx.XlError):
             color = QColor(self.theme["danger"])
-        p.setPen(color)
         flags = int(hflag) | int(vflag) | wrap
+        if link_target(cell):
+            # a link is a button: click it to go there
+            pill = self.link_rect(r, c)
+            bg = st.fill or self.theme["canvas"].lstrip("#").upper()
+            lc = readable_on(self.theme["link"].lstrip("#").upper(), bg, 3.5)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            tint = qcolor(lc, 38)
+            p.setBrush(tint)
+            p.setPen(QPen(qcolor(lc), 1.2))
+            p.drawRoundedRect(pill, 6, 6)
+            color = qcolor(lc)
+        p.setPen(color)
         if clip.right() > rect.right():
             # text spilling past its cell: over each neighbour it takes the
             # colour that reads on that neighbour (its fill, or the bare sheet)
@@ -748,6 +759,22 @@ class SheetView(QAbstractScrollArea):
                 for i in range(3):
                     p.drawEllipse(QPoint(m.left() + 3 + i * 4, m.center().y()), 1, 1)
         p.restore()
+
+    def link_rect(self, r, c):
+        """Where a link cell's button sits (around its text)."""
+        cell = self.ws._cells.get((r, c))
+        rect = self.cell_rect(r, c)
+        if cell is None:
+            return QRect()
+        st = self.style_of(cell)
+        text = self.book.display_text(self.ws, r, c) or " "
+        inner = rect.adjusted(self.pad_x, self.pad_y, -self.pad_x, -self.pad_y - 1)
+        h = st.halign if st.halign not in (None, "general") else "left"
+        hflag = {"right": Qt.AlignRight, "center": Qt.AlignHCenter, "centerContinuous": Qt.AlignHCenter}.get(h, Qt.AlignLeft)
+        vflag = {"top": Qt.AlignTop, "center": Qt.AlignVCenter}.get(st.valign, Qt.AlignBottom)
+        flags = int(hflag) | int(vflag) | (int(Qt.TextWordWrap) if st.wrap else 0)
+        box = st.fm.boundingRect(inner, flags, text)
+        return box.adjusted(-6, -2, 6, 2).intersected(rect.adjusted(1, 1, -1, -1))
 
     def selection(self):
         (r1, c1), (r2, c2) = self.anchor, self.cur
@@ -1023,14 +1050,13 @@ class SheetView(QAbstractScrollArea):
         if self.tool is not None and self.tool.press(row, col, e):
             self._drag = ("tool",)
             return
-        if e.modifiers() & Qt.ControlModifier:
-            cell = self.ws._cells.get((row, col))
-            if cell is not None and cell.hyperlink is not None:
-                link = cell.hyperlink
-                target = link.target or ("#" + link.location if link.location else None)
-                if target:
-                    self.linkActivated.emit(target)
-                    return
+        cell = self.ws._cells.get((row, col))
+        target = link_target(cell)
+        if target and not (e.modifiers() & Qt.ShiftModifier):
+            on_button = self.link_rect(row, col).contains(pos)
+            if on_button or e.modifiers() & Qt.ControlModifier:
+                self.linkActivated.emit(target)
+                return
         self.set_current(row, col, bool(e.modifiers() & Qt.ShiftModifier))
         self._drag = ("cells",)
 
@@ -1050,6 +1076,14 @@ class SheetView(QAbstractScrollArea):
                 if (self.fcol > 1 and abs(pos.x() - fx_line) <= 3) or (self.frow > 1 and abs(pos.y() - fy_line) <= 3):
                     tip = (f"Frozen panes: everything above and left of {self.ws.freeze_panes} stays put while "
                            "you scroll.\nView → Freeze panes, or right-click a cell, to change or unfreeze.")
+            if self.ws is not None and not edge and not tip:
+                row, col = self.hit(pos)
+                cell = self.ws._cells.get((row, col)) if row and col else None
+                target = link_target(cell)
+                if target and self.link_rect(row, col).contains(pos):
+                    self.viewport().setCursor(Qt.PointingHandCursor)
+                    where = target[1:] if target.startswith("#") else target
+                    tip = f"Go to {where}"
             if tip != self.viewport().toolTip():
                 self.viewport().setToolTip(tip)
             if self.tool is not None:
@@ -1215,6 +1249,7 @@ class SheetView(QAbstractScrollArea):
                          f"border: 2px solid {t['accent']}; border-radius: 0; padding: 0; }}")
         ed.setPlainText(self.book.edit_text(self.ws, r, c) if initial is None else initial)
         self._place_editor()
+        ed.textChanged.connect(self._widen_editor)
         ed.show()
         ed.setFocus()
         ed.moveCursor(ed.textCursor().MoveOperation.End)
@@ -1223,10 +1258,30 @@ class SheetView(QAbstractScrollArea):
         if self.editor is None:
             return
         rect = self.cell_rect(*self.edit_cell)
-        rect = QRect(rect.left() - 1, rect.top() - 1, max(rect.width() + 2, 120), max(rect.height() + 2, 26))
+        width = max(rect.width() + 2, 120)
+        cell = self.ws._cells.get(self.edit_cell)
+        wraps = cell is not None and self.style_of(cell).wrap
+        if not wraps:
+            fm = QFontMetrics(self.editor.font())
+            lines = self.editor.toPlainText().split("\n") or [""]
+            need = max(fm.horizontalAdvance(line) for line in lines) + 2 * PAD_X + 24
+            room = self.viewport().width() - rect.left() - 6
+            width = max(width, min(need, room))
+        rect = QRect(rect.left() - 1, rect.top() - 1, width, max(rect.height() + 2, 26))
         self.editor_base = rect
         self.editor.setGeometry(rect)
         self.editor.grow()
+
+    def _widen_editor(self):
+        if self.editor is not None and self.editor_base is not None:
+            cell = self.ws._cells.get(self.edit_cell)
+            if cell is None or not self.style_of(cell).wrap:
+                fm = QFontMetrics(self.editor.font())
+                need = max(fm.horizontalAdvance(l) for l in (self.editor.toPlainText().split("\n") or [""])) + 2 * PAD_X + 24
+                room = self.viewport().width() - self.editor_base.left() - 6
+                w = max(self.editor_base.width(), min(need, room))
+                if w != self.editor.width():
+                    self.editor.resize(w, self.editor.height())
 
     def is_editing(self):
         return self.editor is not None and self.editor.isVisible()
@@ -1377,6 +1432,16 @@ class SheetView(QAbstractScrollArea):
         dst.value = fx.translate(v, dr, dc) if fx.is_formula(v) else v
         if src.has_style:
             dst._style = copy.copy(src._style)
+
+
+def link_target(cell):
+    """'#Sheet!A1' for a link inside the workbook, a URL for one outside, or None."""
+    link = getattr(cell, "_hyperlink", None) if cell is not None else None
+    if link is None:
+        return None
+    if link.location:
+        return "#" + link.location
+    return link.target or None
 
 
 def _lum(hex6):
