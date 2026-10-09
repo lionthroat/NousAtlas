@@ -851,13 +851,21 @@ class MainWindow(QMainWindow):
         self.ranges_panel = ranges.RangesPanel(self)
         self.right = QTabWidget()
         self.right.addTab(self.inspector, "Cell")
-        self.right.addTab(self.ranges_panel, "Layers")
+        from PySide6.QtWidgets import QScrollArea
+        layers_scroll = QScrollArea()
+        layers_scroll.setWidgetResizable(True)
+        layers_scroll.setFrameShape(QFrame.NoFrame)
+        layers_scroll.setWidget(self.ranges_panel)
+        self.right.addTab(layers_scroll, "Layers")
         self.right.currentChanged.connect(self.right_tab_changed)
 
         self.splitter = QSplitter()
         self.splitter.addWidget(self.sidebar)
         self.splitter.addWidget(center)
         self.splitter.addWidget(self.right)
+        self.right.setMinimumWidth(260)
+        self.splitter.setCollapsible(2, False)
+        self.splitter.setCollapsible(0, True)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([230, 900, 320])
         self.splitter.setHandleWidth(1)
@@ -1052,10 +1060,18 @@ class MainWindow(QMainWindow):
         self.layers_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.layers_btn.setPopupMode(QToolButton.MenuButtonPopup)
         self.layers_btn.setToolTip("Show layers on maps (the Layers tab). The arrow has New layer (Ctrl+L).")
-        self.layers_btn.clicked.connect(lambda on: self.right.setCurrentIndex(1 if on else 0))
+        self.layers_btn.clicked.connect(lambda on: self.show_layers_tab() if on else self.right.setCurrentIndex(0))
         lm = QMenu(self)
         lm.addAction(self.a_layer_here)
         lm.addAction("Done painting", lambda: self.stop_painting())
+        lm.addSeparator()
+        self.style_menu = lm.addMenu("Draw the selected layer as")
+        for key, label in (("area", "Area (fills squares)"), ("path", "Path (a line: roads, tracks, rivers)"),
+                           ("marker", "Marker (a dot)")):
+            a = self.style_menu.addAction(label, lambda k=key: self.set_layer_style(k))
+            a.setCheckable(True)
+            a.setData(key)
+        lm.aboutToShow.connect(self.sync_style_menu)
         self.layers_btn.setMenu(lm)
         tb.addWidget(self.layers_btn)
         self.row_mode_btn = QToolButton()
@@ -1604,6 +1620,30 @@ class MainWindow(QMainWindow):
             self.stop_painting(quiet=True)
         self.grid.viewport().update()
 
+    def show_layers_tab(self):
+        """Open the Layers tab, and the side panel too if it's been dragged narrow."""
+        sizes = self.splitter.sizes()
+        if len(sizes) == 3 and sizes[2] < 260:
+            take = 330 - sizes[2]
+            self.splitter.setSizes([sizes[0], max(300, sizes[1] - take), 330])
+        self.right.setCurrentIndex(1)
+
+    def sync_style_menu(self):
+        layer = self.book.ranges.get(self.range_state.layer) if (self.book and self.range_state.layer) else None
+        self.style_menu.setEnabled(layer is not None)
+        self.style_menu.setTitle(f"Draw {layer.name} as" if layer else "Draw the selected layer as")
+        for a in self.style_menu.actions():
+            a.setChecked(layer is not None and a.data() == layer.style)
+
+    def set_layer_style(self, key):
+        layer = self.book.ranges.get(self.range_state.layer) if (self.book and self.range_state.layer) else None
+        if layer is None or layer.style == key:
+            return
+        self.book.begin([])
+        self.book.ranges.get(layer.name).style = key
+        self.book.done("ranges")
+        self.show_layers_tab()
+
     def new_layer_here(self):
         """Ctrl+L. On a map: put the selected squares in a layer. Elsewhere:
         make a layer for the selected name."""
@@ -1649,7 +1689,7 @@ class MainWindow(QMainWindow):
         self.book.ranges.paint(layer, ws.title, st.blocks, squares_sel, st.level or 3)
         self.book.done("ranges")
         st.layer = layer.name
-        self.right.setCurrentIndex(1)
+        self.show_layers_tab()
         self.ranges_panel.refresh()
         self.statusBar().showMessage(f"{len(squares_sel)} square{'s' if len(squares_sel) != 1 else ''} in {layer.name}. "
                                      "Ctrl+Z undoes it; turn on Paint on the Layers tab to keep going.", 6000)
@@ -1788,7 +1828,7 @@ class MainWindow(QMainWindow):
                 if name in self.book.meta["maps"]:
                     menu.addAction("Stop treating as a map", lambda: self.unmap(name))
                 else:
-                    menu.addAction("Make this a map…", lambda: (self.open_sheet(name), self.right.setCurrentIndex(1)))
+                    menu.addAction("Make this a map…", lambda: (self.open_sheet(name), self.show_layers_tab()))
                 menu.addSeparator()
                 menu.addAction("Delete sheet…", lambda: self.delete_sheet(ws))
             else:
@@ -2667,7 +2707,7 @@ class MainWindow(QMainWindow):
         st.split = True
         st.blocks = set(ranges.BLOCKS)
         self.open_sheet(map_title)
-        self.right.setCurrentIndex(1)
+        self.show_layers_tab()
         self.ranges_panel.refresh()
         self.grid.viewport().update()
 

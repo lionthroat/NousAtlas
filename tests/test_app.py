@@ -449,3 +449,39 @@ assert fl["B4"].border.top.color.rgb.endswith("88C0D0"), fl["B4"].border.top.col
 assert w.toolbar.findChildren(QToolButton) and w.spacing_btn.isVisibleTo(w)
 assert w.a_clear_fmt not in w.toolbar.actions()
 print("OK toolbar")
+
+# ---- Layers panel can't get lost; Draw-as from the button menu; only the selected area draws
+w.open_sheet(mp)
+w.right.setCurrentIndex(0)
+w.splitter.setSizes([200, 1200, 0]); app.processEvents()
+w.layers_btn.click(); app.processEvents()
+assert w.splitter.sizes()[2] >= 260 and w.layers_showing(), w.splitter.sizes()
+w.range_state.layer = "South track"
+w.sync_style_menu(); assert w.style_menu.title() == "Draw South track as"
+w.set_layer_style("marker"); assert w.book.ranges.get("South track").style == "marker"
+w.undo(); assert w.book.ranges.get("South track").style == "path"
+class _P:                       # records what the overlay would draw
+    def __init__(self): self.fills = 0
+    def save(self): pass
+    def restore(self): pass
+    def setRenderHint(self, *a): pass
+    def setPen(self, *a): pass
+    def setBrush(self, *a): pass
+    def fillRect(self, *a): self.fills += 1
+    def drawPolygon(self, *a): self.fills += 1
+    def drawLine(self, *a): pass
+    def drawPoint(self, *a): pass
+    def drawEllipse(self, *a): pass
+st = w.range_state; st.solo = None; st.split = False; st.blocks = set(R.BLOCKS)
+fs = w.book.ranges.get("Tally jay")
+r7, c7 = R.square_cell(info, (7, 6))
+st.layer = "South track"; st.all_areas = False
+pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), r7, c7, w.grid.cell_rect(r7, c7)); assert pp.fills == 0
+st.layer = "Tally jay"
+pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), r7, c7, w.grid.cell_rect(r7, c7)); assert pp.fills == 1
+st.all_areas = True
+pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), r7, c7, w.grid.cell_rect(r7, c7)); assert pp.fills >= 1
+st.all_areas = False
+QTest.keyPress(w.grid, Qt.Key_Alt); assert w.grid.viewport().cursor().shape() == Qt.CrossCursor
+QTest.keyRelease(w.grid, Qt.Key_Alt); assert w.grid.viewport().cursor().shape() != Qt.CrossCursor
+print("OK layers panel")

@@ -317,6 +317,7 @@ class ViewState:
         self.painting = False
         self.layer = None            # name of the layer being painted
         self.solo = None
+        self.all_areas = False       # False: only the selected layer's area draws (paths/markers always do)
 
 
 class Overlay:
@@ -355,6 +356,8 @@ class Overlay:
             if st.solo and layer.name != st.solo:
                 continue
             if not st.solo and not layer.visible:
+                continue
+            if not st.solo and not st.all_areas and layer.style == "area" and layer.name != st.layer:
                 continue
             d, n = self._view(layer, ws.title, sq)
             if not (d or n):
@@ -596,6 +599,11 @@ class RangesPanel(QWidget):
         self.style_box.activated.connect(self.style_chosen)
         row.addWidget(self.style_box, 1)
         b.addLayout(row)
+        self.all_box = QCheckBox("Show every ticked area at once")
+        self.all_box.setToolTip("Off: only the selected layer's area is drawn, so the map stays readable.\n"
+                                "Paths and markers always draw.")
+        self.all_box.toggled.connect(self.all_toggled)
+        b.addWidget(self.all_box)
         self.solo_note = QLabel()
         self.solo_note.setObjectName("muted")
         b.addWidget(self.solo_note)
@@ -691,6 +699,9 @@ class RangesPanel(QWidget):
         self.split_box.blockSignals(True)
         self.split_box.setChecked(self.st.split)
         self.split_box.blockSignals(False)
+        self.all_box.blockSignals(True)
+        self.all_box.setChecked(self.st.all_areas)
+        self.all_box.blockSignals(False)
         self.level_group.button(self.st.level).setChecked(True)
         self.paint_btn.blockSignals(True)
         self.paint_btn.setChecked(self.st.painting)
@@ -872,6 +883,10 @@ class RangesPanel(QWidget):
             layer.visible = it.checkState() == Qt.Checked
             self.window.grid.viewport().update()
 
+    def all_toggled(self, on):
+        self.st.all_areas = on
+        self.window.grid.viewport().update()
+
     def style_chosen(self, idx):
         layer = self._selected_layer()
         style = self.style_box.itemData(idx)
@@ -892,6 +907,7 @@ class RangesPanel(QWidget):
             self.sync_style_box()
             self.st.layer = cur.data(Qt.UserRole)
             self.update_notes()
+            self.window.grid.viewport().update()
             self.window.update_paint_bar()
 
     def solo_toggle(self, it):

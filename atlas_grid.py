@@ -975,6 +975,10 @@ class SheetView(QAbstractScrollArea):
     def keyPressEvent(self, e):
         if self.ws is None:
             return
+        if e.key() == Qt.Key_Alt:
+            self.viewport().setCursor(Qt.CrossCursor)
+            e.accept()
+            return
         k, mods = e.key(), e.modifiers()
         shift = bool(mods & Qt.ShiftModifier)
         ctrl = bool(mods & Qt.ControlModifier)
@@ -1143,6 +1147,8 @@ class SheetView(QAbstractScrollArea):
             edge = self._border_hit(pos)
             if edge:
                 self.viewport().setCursor(Qt.SplitHCursor if edge[0] == "col" else Qt.SplitVCursor)
+            elif QApplication.keyboardModifiers() & Qt.AltModifier:
+                self.viewport().setCursor(Qt.CrossCursor)
             else:
                 self.viewport().unsetCursor()
             # say what the frozen-pane divider is when the mouse is on it
@@ -1219,6 +1225,13 @@ class SheetView(QAbstractScrollArea):
         if row and col and (self.tool is None or not self.tool.active()):
             self.set_current(row, col)
             self.start_edit()
+
+    def keyReleaseEvent(self, e):
+        if e.key() == Qt.Key_Alt:
+            self.viewport().unsetCursor()
+            e.accept()      # and don't hand Alt to the menu bar
+            return
+        super().keyReleaseEvent(e)
 
     def leaveEvent(self, e):
         super().leaveEvent(e)
