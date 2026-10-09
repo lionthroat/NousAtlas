@@ -42,22 +42,33 @@ still open everything Atlas saves.
   was written for a white page is shown lighter. That's display only; the
   file isn't changed.
 
-## Range layers
+## Layers
 
 Map sheets (a row lettered A, B, C… with 1, 2, 3… down its left side) are found
-automatically. Open one and use the **Ranges** tab:
+automatically. A **layer** is anything with a footprint on a map: creatures,
+plants, characters, paths, quests.
 
-- One **layer** per creature or plant, each with its own colour.
-- Times are the game's six 4-hour blocks: 00, 04, 08, 12, 16, 20. **Day** is
-  08–20 and **Night** is 20–08. **Split day / night** shows day in each square's
-  top-left half and night in its bottom-right half.
-- **Paint** with Common, Uncommon or Rare. Shift-drag (or the Erase brush)
-  removes squares. Painting applies to the times that are switched on.
-- Double-click a layer to show only that one.
-- **Here** lists everything in the selected square, block by block.
-- In any other sheet, right-click a name and choose *Make a range layer for
-  “…”*. After that, selecting that row shows a button that jumps straight to
-  its range on the map.
+- **Select squares, then add them**: select squares on the map (click or drag)
+  and press **Ctrl+L** or click **Add selected squares to …**.
+  **Ctrl+Shift+L** / **Remove** takes them out. Optionally, **Paint by
+  dragging** lets you drag over squares instead (Shift-drag removes).
+- **Times and rarity are the workbook's own** (Format → Layer times and
+  rarity, or the link in the Layers section): no time at all (the default for
+  new workbooks), Day / Night, Dawn / Day / Dusk / Night, hourly, six 4-hour
+  ticks grouped Day / Night, or your own named periods with optional groups.
+  Rarity is off by default, or up to three names of your own. With no time or
+  no rarity, those controls don't appear. Changing the scheme keeps what it
+  can; anything that doesn't fit becomes "all the time".
+- **Show** picks what the map displays. With two to four periods (or groups)
+  each square splits: two diagonally, four into quarters. Day is the layer's
+  colour; night is a darker, bluer shade of it.
+- The selected layer is drawn at full strength; other layers' areas fade
+  (**Show every ticked area at full strength** turns that off). Paths and
+  markers always show.
+- **Square editor**: select one square to see every layer in it, by period;
+  click to change.
+- In any other sheet, right-click a name → *Make a layer for “…”* (or *Go to
+  the … layer* once it exists).
 
 ## Square cards
 

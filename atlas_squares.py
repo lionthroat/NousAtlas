@@ -159,7 +159,9 @@ class SquareIndex:
     def card(self, map_title, sq):
         """Everything known about one square."""
         self.refresh()
-        info = self.book.meta["maps"][map_title]
+        info = self.book.meta["maps"].get(map_title)
+        if info is None:
+            return None
         ws = self.book.sheet(map_title)
         r, c = R.square_cell(info, sq)
         mark = ws._cells.get((r, c)) if ws is not None else None
@@ -171,10 +173,14 @@ class SquareIndex:
                 life.append((layer, max(levels.values()), blocks, self.homes.get(layer.name.lower())))
         note = self.book.meta.get("square_notes", {}).get(map_title, {}).get(R.square_label(sq), "")
         return {"square": R.square_label(sq), "mark": mark, "places": self.places.get((map_title, sq), []),
-                "life": life, "note": note, "terrain": self.terrain(map_title, sq)}
+                "life": life, "note": note, "terrain": self.terrain(map_title, sq),
+                "scheme": self.book.ranges.scheme if self.book.ranges is not None else None,
+                "rarity": R.rarity_of(self.book)}
 
     def has_content(self, map_title, sq):
         cd = self.card(map_title, sq)
+        if cd is None:
+            return False
         return bool(cd["places"] or cd["life"] or cd["note"] or cd["mark"] or cd["terrain"])
 
 
@@ -196,15 +202,22 @@ def card_html(cd, theme, map_title, with_note=True):
     if cd["life"]:
         out.append(f"<div style='color:{t['faint']}; margin-top:6px'>Life here</div>")
         for layer, level, blocks, home in cd["life"]:
-            when = R.times_label(blocks)
-            what = f"{R.LEVELS[level]} · {when.lower() if when in ('Day', 'Night', 'All day') else when}"
+            scheme = book_scheme = cd.get("scheme")
+            bits = []
             if layer.style != "area":
-                what = layer.style
+                bits.append(layer.style)
+            else:
+                if cd.get("rarity"):
+                    bits.append(cd["rarity"].get(level, "").lower())
+                if scheme is not None and scheme.has_time():
+                    when = scheme.times_label(blocks)
+                    bits.append(when.lower() if when in ("Day", "Night", "All day") else when)
+            what = " · ".join(b for b in bits if b)
             kind = f"{esc(home[0])}: " if home else ""
             name = (f"<a style='color:#{layer.color}; text-decoration:none' href='{href(*home)}'>{esc(layer.name)}</a>"
                     if home else f"<span style='color:#{layer.color}'>{esc(layer.name)}</span>")
-            out.append(f"<div><span style='color:{t['muted']}'>{kind}</span>{name} "
-                       f"<span style='color:{t['faint']}'>· {esc(what)}</span></div>")
+            out.append(f"<div><span style='color:{t['muted']}'>{kind}</span>{name}"
+                       + (f" <span style='color:{t['faint']}'>· {esc(what)}</span>" if what else "") + "</div>")
     if cd["note"] and with_note:
         out.append(f"<div style='color:{t['faint']}; margin-top:6px'>Note</div>")
         out.append(f"<div style='color:{t['text']}'>{esc(cd['note']).replace(chr(10), '<br>')}</div>")

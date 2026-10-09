@@ -26,6 +26,11 @@ app = QApplication(sys.argv)
 w = nousatlas.MainWindow(); w.resize(1400, 900); w.show()
 assert w.open_path(path)
 book = w.book
+# a brand-new workbook has no layer time and no rarity
+assert book.meta["time"] == {"preset": "none"} and book.meta["rarity"] is None
+# most of these tests use the Biomes six ticks and three rarity levels
+book.meta["time"] = {"preset": "biomes"}; book.meta["rarity"] = ["Common", "Uncommon", "Rare"]
+book.ranges.scheme = R.TimeScheme.from_meta(book.meta)
 
 # sidebar: maps found and grouped, every sheet listed once
 assert "MAP — Day One" in book.meta["maps"], book.meta["maps"]
@@ -79,7 +84,17 @@ fauna = book.sheet("Fauna")
 w.open_sheet("Fauna"); g.set_current(3, 1)
 name = fauna["A3"].value
 w.make_layer_for(name)
-assert w.ws_title == "MAP — Day One" and w.range_state.painting and w.range_state.solo == name
+assert w.ws_title == "MAP — Day One" and w.range_state.layer == name and w.range_state.solo is None
+assert not w.range_state.painting                 # making a layer doesn't start a brush
+# select, then add: the main way to put squares in a layer
+w.grid.select_range(*R.square_cell(info0 := book.meta["maps"]["MAP — Day One"], (2, 2)), *R.square_cell(info0, (3, 3)))
+w.ranges_panel.set_blocks(R.NIGHT)
+QTest.keyClick(w, Qt.Key_L, Qt.ControlModifier) if False else w.new_layer_here()
+lay0 = book.ranges.get(name)
+assert lay0.level("MAP — Day One", 0, (3, 3)) == 3 and lay0.level("MAP — Day One", 12, (3, 3)) == 0
+w.add_selection_to_layer(remove=True)
+assert not book.ranges.get(name).present("MAP — Day One", (2, 2))
+w.range_state.painting = True                    # the optional drag brush
 
 class Ev:
     def __init__(self, mods=Qt.NoModifier): self.m = mods
@@ -125,9 +140,9 @@ assert "Ranges" in wb.sheetnames and wb["_NousAtlas"].sheet_state == "veryHidden
 rows = list(wb["Ranges"].iter_rows(values_only=True))
 assert rows[0] == tuple(R.HEADERS), rows[0]
 bat_rows = [r[:6] for r in rows if r[0] == "Chimney Bats"]
-assert ("Chimney Bats", "MAP — Day One", "Night", "common", "A1:Q15", bats.color) in bat_rows, bat_rows
-assert any(r[2] == "16:00" and r[3] == "common" and r[4] == "E3" for r in bat_rows), bat_rows
-assert any(r[2] == "16:00" and r[3] == "uncommon" and R.parse_squares(r[4]) == {(4, 2), (5, 2), (6, 2), (4, 3), (6, 3), (4, 4), (5, 4), (6, 4)} for r in bat_rows), bat_rows
+assert ("Chimney Bats", "MAP — Day One", "Night", "Common", "A1:Q15", bats.color) in bat_rows, bat_rows
+assert any(r[2] == "16:00" and r[3] == "Common" and r[4] == "E3" for r in bat_rows), bat_rows
+assert any(r[2] == "16:00" and r[3] == "Uncommon" and R.parse_squares(r[4]) == {(4, 2), (5, 2), (6, 2), (4, 3), (6, 3), (4, 4), (5, 4), (6, 4)} for r in bat_rows), bat_rows
 assert len(bat_rows) == 3, bat_rows
 assert wb["Gazetteer"]["E5"].value == 10
 
@@ -319,7 +334,9 @@ mp = "Redsaint Map"
 w.open_sheet("Fauna"); w.grid.set_current(6, 1)
 name6 = w.book.sheet("Fauna").cell(6, 1).value
 w.make_layer_for(name6)
-assert w.range_state.painting and w.paint_bar.isVisibleTo(w) and w.layers_showing()
+assert w.layers_showing() and not w.range_state.painting
+w.ranges_panel.paint_btn.setChecked(True)          # the optional drag brush
+assert w.range_state.painting and w.paint_bar.isVisibleTo(w)
 QTest.keyClick(w.grid, Qt.Key_Escape)
 assert not w.range_state.painting and not w.paint_bar.isVisibleTo(w)
 w.ranges_panel.paint_btn.setChecked(True); assert w.range_state.painting and w.paint_bar.isVisibleTo(w)
@@ -339,9 +356,11 @@ assert w.book.sheet("Gazetteer").cell(3, 2).comment.text == "cell note"
 print("OK paint exits")
 
 # ---- Ctrl+L: layer on the selected squares; toolbar button
-QInputDialog.getItem = staticmethod(lambda parent, title, label, items, cur, editable=True, *a, **k: ("Dust devils", True))
+_getText = QInputDialog.getText
+QInputDialog.getText = staticmethod(lambda *a, **k: ("Dust devils", True))
 w.hide_layers()
 w.open_sheet(mp)
+w.range_state.layer = None                        # no layer selected: Ctrl+L asks for a name
 ra, ca = R.square_cell(info, (2, 2)); rb, cb = R.square_cell(info, (3, 3))
 w.grid.select_range(ra, ca, rb, cb)
 QTest.keyClick(w, Qt.Key_L, Qt.ControlModifier)
@@ -350,6 +369,7 @@ assert dd is not None and dd.level(mp, 12, (3, 3)) == 3 and dd.level(mp, 12, (2,
 assert w.layers_showing() and w.layers_btn.isChecked()
 w.layers_btn.click(); assert not w.layers_showing()
 w.undo(); assert w.book.ranges.get("Dust devils") is None
+QInputDialog.getText = _getText
 print("OK ctrl+l")
 
 # ---- Here table: edit what's on a square, by time, without repainting
@@ -483,9 +503,9 @@ st = w.range_state; st.solo = None; st.split = False; st.blocks = set(R.BLOCKS)
 fs = w.book.ranges.get("Tally jay")
 r7, c7 = R.square_cell(info, (7, 6))
 st.layer = "South track"; st.all_areas = False
-pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), r7, c7, w.grid.cell_rect(r7, c7)); assert pp.fills == 0
+pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), r7, c7, w.grid.cell_rect(r7, c7)); assert pp.fills >= 1   # faded, not hidden
 st.layer = "Tally jay"
-pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), r7, c7, w.grid.cell_rect(r7, c7)); assert pp.fills == 1
+pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), r7, c7, w.grid.cell_rect(r7, c7)); assert pp.fills >= 1
 st.all_areas = True
 pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), r7, c7, w.grid.cell_rect(r7, c7)); assert pp.fills >= 1
 st.all_areas = False
@@ -506,20 +526,18 @@ trk = w.book.ranges.get("South track")
 assert all(trk.level(mp, b, (9, 6)) == 3 for b in R.BLOCKS)          # painted as simply there
 st.layer = "South track"; w.ranges_panel.update_notes()
 rp = w.ranges_panel
-assert not rp.time_box.isVisibleTo(rp)                                   # no Time for a path
-assert rp.level_group.button(3).text() == "Draw" and not rp.level_group.button(2).isVisibleTo(rp)
-rp.level_group.button(0).click(); assert w.range_state.painting and w.range_state.level == 0     # Erase
-rp.level_group.button(3).click(); assert w.range_state.painting and w.range_state.level == 3     # back to Draw
-rp.level_group.button(R.BRUSH_OFF).click(); assert not w.range_state.painting                             # Off
-# one erase stroke, one undo
-rp.level_group.button(0).click()
+rp.fill_options()
+assert not rp.for_box.isVisibleTo(rp) and not rp.as_box.isVisibleTo(rp)     # no time or rarity for a path
+assert rp.add_btn.text() == "Add selected squares to South track"
+# one removing stroke (Shift-drag with the brush), one undo
+rp.paint_btn.setChecked(True); assert w.range_state.painting
 r8, c8 = R.square_cell(info, (9, 8))
-QTest.mouseClick(w.grid.viewport(), Qt.LeftButton, Qt.NoModifier, w.grid.cell_rect(r8, c8).center())
-assert not w.book.ranges.get("South track").level(mp, 0, (9, 8))
+QTest.mouseClick(w.grid.viewport(), Qt.LeftButton, Qt.ShiftModifier, w.grid.cell_rect(r8, c8).center())
+assert not w.book.ranges.get("South track").present(mp, (9, 8))
 w.book.begin([]); w.book.done("ranges")          # an empty step sneaks in: Ctrl+Z skips it
 w.a_undo.trigger()
 assert w.book.ranges.get("South track").level(mp, 0, (9, 8)) == 3
-rp.level_group.button(R.BRUSH_OFF).click()
+rp.paint_btn.setChecked(False); assert not w.range_state.painting
 # the end at I15 (bottom edge) runs off the map; the top end at I6 stops
 ends = dict((l.name, d) for l, d in R.path_ends_here(w.book, mp, (9, 15)))
 assert "South track" in ends and R.path_end(w.book, trk, mp, (9, 15), ends["South track"], info) == "run"
@@ -590,9 +608,9 @@ w.open_sheet(mp); w.show_layers_tab()
 w.book.begin([]); sc = w.book.ranges.add("Scorp test"); w.book.done("ranges")
 w.range_state.layer = "Scorp test"; rp.refresh()
 rp.set_view("split")
-rp.paint_btns["night"].click(); assert w.range_state.blocks == R.NIGHT and w.range_state.view == "split"
+rp.set_blocks(R.NIGHT); assert w.range_state.blocks == R.NIGHT and w.range_state.view == "split"
 w.book.begin([]); w.book.ranges.paint(w.book.ranges.get("Scorp test"), mp, w.range_state.blocks, [(1, 1), (8, 10)], 3); w.book.done("ranges")
-rp.paint_btns["day"].click(); assert w.range_state.blocks == R.DAY and w.range_state.view == "split"
+rp.set_blocks(R.DAY); assert w.range_state.blocks == R.DAY and w.range_state.view == "split"
 w.book.begin([]); w.book.ranges.paint(w.book.ranges.get("Scorp test"), mp, w.range_state.blocks, [(8, 10)], 3); w.book.done("ranges")
 class _Q(_P):
     def __init__(self): super().__init__(); self.brushes = []
@@ -604,8 +622,8 @@ assert night_hex in q.brushes and day_hex not in q.brushes, q.brushes          #
 rb, cb = R.square_cell(info, (8, 10)); q = _Q(); w.grid.overlay.paint(q, w.book.sheet(mp), rb, cb, w.grid.cell_rect(rb, cb))
 assert night_hex in q.brushes and day_hex in q.brushes, q.brushes              # both: two tones
 rp.set_view("night"); q = _Q(); w.grid.overlay.paint(q, w.book.sheet(mp), r1, c1, w.grid.cell_rect(r1, c1))
-assert q.fills == 1
+assert night_hex in q.brushes
 rp.set_view("day"); q = _Q(); w.grid.overlay.paint(q, w.book.sheet(mp), r1, c1, w.grid.cell_rect(r1, c1))
-assert q.fills == 0
+assert night_hex not in q.brushes and day_hex not in q.brushes
 rp.set_view("split")
 print("OK day/night")

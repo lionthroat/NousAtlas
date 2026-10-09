@@ -625,6 +625,9 @@ class Inspector(QWidget):
         self.note_label.setVisible(has_note)
         self.note.setVisible(has_note)
         cd = w.squares.card(ws.title, sq)
+        if cd is None:
+            self.square_box.hide()
+            return
         self.square_card.setText(squares.card_html(cd, w.theme, ws.title, with_note=False))
         self.text.setMaximumHeight(70)          # map squares hold a short mark; make room for the card
         self.square_note.setPlainText(cd["note"])
@@ -1009,9 +1012,12 @@ class MainWindow(QMainWindow):
         self.a_merge = self.act("Merge and center", self.toggle_merge, None, True)
         self.a_clear_fmt = self.act("Clear formatting", self.clear_formatting)
         self.a_note = self.act("Edit note…", self.edit_cell_note, "Shift+F2")
-        self.a_layer_here = self.act("New layer on the selected squares", self.new_layer_here, "Ctrl+L",
-                                     tip="On a map: put the selected squares in a layer (new or existing). "
+        self.a_layer_here = self.act("Add selected squares to the layer", self.new_layer_here, "Ctrl+L",
+                                     tip="On a map: add the selected squares to the selected layer. "
                                          "On another sheet: make a layer for the selected name. (Ctrl+L)")
+        self.a_layer_remove = self.act("Remove selected squares from the layer",
+                                       lambda: self.add_selection_to_layer(remove=True), "Ctrl+Shift+L")
+        self.addAction(self.a_layer_remove)
         self.halign = {}
         for k in ("left", "center", "right"):
             self.halign[k] = self.act(f"Align {k}", lambda _=False, k=k: self.set_halign(k), None, True)
@@ -1273,6 +1279,7 @@ class MainWindow(QMainWindow):
         fm.addAction(self.a_clear_fmt)
         fm.addSeparator()
         fm.addAction(self.act("Sheet margins and spacing…", self.edit_sheet_layout))
+        fm.addAction(self.act("Layer times and rarity…", self.edit_layer_settings))
         fm.addAction(self.act("Link squares to a map…", self.link_selection_dialog))
         fm.addAction(self.act("Remove links (keep the text)", self.remove_links))
         fm.addSeparator()
@@ -1820,54 +1827,74 @@ class MainWindow(QMainWindow):
         self.show_layers_tab()
 
     def new_layer_here(self):
-        """Ctrl+L. On a map: put the selected squares in a layer. Elsewhere:
-        make a layer for the selected name."""
+        """Ctrl+L. On a map: add the selected squares to the selected layer
+        (asks for a name when there's no layer yet). Elsewhere: make a layer
+        for the selected name."""
         ws = self.current_ws()
         if ws is None or self.book is None:
             return
-        info = self.book.meta["maps"].get(ws.title)
+        if ws.title in self.book.meta["maps"]:
+            self.add_selection_to_layer(remove=False)
+            return
+        cell = self.current_cell()
+        name = cell.value.strip() if cell is not None and isinstance(cell.value, str) else ""
+        if name and "\n" not in name and len(name) <= 60 and not fx.is_formula(name):
+            existing = self.book.ranges.get(name)
+            if existing is not None:
+                maps = self.map_titles()
+                painted = [t for t in maps if existing.has_map(t)]
+                if maps:
+                    self.show_range(existing.name, (painted or maps)[0])
+                return
+            self.make_layer_for(name)
+        else:
+            self.statusBar().showMessage("Ctrl+L: select squares on a map, or a name (e.g. on Fauna) "
+                                         "to make a layer for it.", 6000)
+
+    def selected_squares(self):
+        ws = self.current_ws()
+        info = self.book.meta["maps"].get(ws.title) if ws is not None else None
         if not info:
-            cell = self.current_cell()
-            name = cell.value.strip() if cell is not None and isinstance(cell.value, str) else ""
-            if name and "\n" not in name and len(name) <= 60 and not fx.is_formula(name):
-                existing = self.book.ranges.get(name)
-                if existing is not None:
-                    maps = self.map_titles()
-                    if maps:
-                        self.show_range(existing.name, maps[0])
-                    return
-                self.make_layer_for(name)
-            else:
-                self.statusBar().showMessage("Ctrl+L: select squares on a map, or a name (e.g. on Fauna) "
-                                             "to make a layer for it.", 6000)
-            return
+            return []
         r1, c1, r2, c2 = self.grid.selection()
-        squares_sel = sorted({sq for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)
-                              for sq in [ranges.map_square(info, r, c)] if sq})
+        return sorted({sq for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)
+                       for sq in [ranges.map_square(info, r, c)] if sq})
+
+    def add_selection_to_layer(self, remove=False):
+        """Put the selected map squares into the selected layer (or take them out),
+        for the times and rarity chosen in the Layers section."""
+        ws = self.current_ws()
+        if ws is None or self.book is None or ws.title not in self.book.meta["maps"]:
+            return
+        squares_sel = self.selected_squares()
         if not squares_sel:
-            self.statusBar().showMessage("Ctrl+L: select one or more squares on the map first.", 6000)
+            self.statusBar().showMessage("Select squares on the map first (click, or drag across them).", 6000)
             return
-        names = [l.name for l in self.book.ranges.layers]
-        where = ranges.square_label(squares_sel[0]) + (f" and {len(squares_sel) - 1} more" if len(squares_sel) > 1 else "")
         st = self.range_state
-        name, ok = QInputDialog.getItem(
-            self, "Layer on these squares",
-            f"Put {where} in a layer as {ranges.LEVELS.get(st.level or 3).upper()}, "
-            f"{ranges.times_label(st.blocks).upper()}.\n(Those come from Brush and Paint for in the Layers section; "
-            "change any square afterwards in the Here table there.)\n\nType a new name or pick an existing layer:",
-            names, -1 if not names else 0, True)
-        name = (name or "").strip()
-        if not ok or not name:
-            return
-        self.book.begin([])
-        layer = self.book.ranges.get(name) or self.book.ranges.add(name)
-        self.book.ranges.paint(layer, ws.title, st.blocks, squares_sel, st.level or 3)
+        layer = self.book.ranges.get(st.layer) if st.layer else None
+        if layer is None:
+            if remove:
+                return
+            name, ok = QInputDialog.getText(self, "New layer", "Name the new layer for these squares:")
+            name = (name or "").strip()
+            if not ok or not name:
+                return
+            self.book.begin([])
+            layer = self.book.ranges.get(name) or self.book.ranges.add(name)
+        else:
+            self.book.begin([])
+        scheme = self.book.ranges.scheme
+        self.book.ranges.paint(layer, ws.title, st.paint_blocks(scheme), squares_sel, 0 if remove else (st.level or 3))
         self.book.done("ranges")
         st.layer = layer.name
         self.show_layers_tab()
         self.ranges_panel.refresh()
-        self.statusBar().showMessage(f"{len(squares_sel)} square{'s' if len(squares_sel) != 1 else ''} in {layer.name}. "
-                                     "Ctrl+Z undoes it; turn on Paint on the Layers tab to keep going.", 6000)
+        n = len(squares_sel)
+        what = "out of" if remove else "in"
+        when = "" if not scheme.has_time() or layer.style != "area" else \
+            f" ({scheme.times_label(st.paint_blocks(scheme)).lower()})"
+        self.statusBar().showMessage(f"{n} square{'s' if n != 1 else ''} {what} {layer.name}{when}. Ctrl+Z undoes it.",
+                                     6000)
 
     def stop_painting(self, quiet=False):
         st = self.range_state
@@ -1890,14 +1917,16 @@ class MainWindow(QMainWindow):
         ws = self.current_ws()
         on = bool(st.painting and st.layer and ws is not None and self.book is not None
                   and ws.title in self.book.meta["maps"] and self.layers_showing())
-        if on and self.ranges_panel.timeless_selected():
-            what = "Erasing" if st.level == 0 else "Painting"
-            self.paint_label.setText(f"<b>{what} · {st.layer}</b> (a path or marker: no times). "
-                                     "Click or drag squares; Shift-drag erases; Ctrl+Z undoes a stroke; Esc stops.")
-        elif on:
-            what = "Erasing" if st.level == 0 else f"Painting {ranges.LEVELS[st.level]}"
-            self.paint_label.setText(f"<b>{what} · {st.layer}</b> · {ranges.times_label(st.blocks)}. "
-                                     "Click or drag squares; Shift-drag erases; Ctrl+Z undoes a stroke; Esc stops.")
+        if on:
+            scheme = self.book.ranges.scheme
+            bits = []
+            if scheme.has_time() and not self.ranges_panel.timeless_selected():
+                bits.append(scheme.times_label(st.paint_blocks(scheme)).lower())
+            if ranges.rarity_of(self.book) and not self.ranges_panel.timeless_selected():
+                bits.append(ranges.level_name(self.book, st.level or 3).lower())
+            extra = f" ({', '.join(bits)})" if bits else ""
+            self.paint_label.setText(f"<b>Painting {st.layer}</b>{extra}. Drag over squares; Shift-drag removes; "
+                                     "Ctrl+Z undoes a stroke; Esc stops.")
         self.paint_bar.setVisible(on)
 
     # ------------------------------------------------------------ square cards
@@ -1929,6 +1958,8 @@ class MainWindow(QMainWindow):
             self.card.hide()
             return
         cd = self.squares.card(map_title, sq)
+        if cd is None:
+            return
         self.card.setStyleSheet(f"QFrame#card {{ background: {self.theme['panel']}; border: 1px solid {self.theme['border']}; "
                                 f"border-radius: 8px; }} QLabel {{ background: transparent; }}")
         self.card.show_for((map_title, sq), squares.card_html(cd, self.theme, map_title), gpos)
@@ -2479,6 +2510,23 @@ class MainWindow(QMainWindow):
                 counts[name] = counts.get(name, 0) + 1
         return sorted(counts, key=lambda n: -counts[n])
 
+    def edit_layer_settings(self):
+        if self.book is None:
+            return
+        dlg = ranges.LayerSettingsDialog(self)
+        if not dlg.exec():
+            return
+        time, rarity = dlg.result_meta()
+        if time == self.book.meta.get("time") and rarity == self.book.meta.get("rarity"):
+            return
+        self.book.begin([])
+        self.book.meta["time"] = time
+        self.book.meta["rarity"] = rarity
+        self.book.ranges.convert(ranges.TimeScheme.from_meta(self.book.meta))
+        self.range_state.blocks = None
+        self.range_state.view = "split"
+        self.book.done("ranges")
+
     def edit_sheet_layout(self):
         if self.current_ws() is not None:
             SheetLayoutDialog(self).exec()
@@ -2894,10 +2942,8 @@ class MainWindow(QMainWindow):
 
     def show_range(self, name, map_title):
         st = self.range_state
-        st.solo = name
+        st.solo = None
         st.layer = name
-        st.split = True
-        st.blocks = set(ranges.BLOCKS)
         self.open_sheet(map_title)
         self.show_layers_tab()
         self.ranges_panel.refresh()
@@ -2918,8 +2964,8 @@ class MainWindow(QMainWindow):
         layer = self.book.ranges.add(name)
         self.book.done("ranges")
         self.show_range(layer.name, map_title)
-        self.range_state.painting = True
-        self.ranges_panel.refresh()
+        self.statusBar().showMessage(f"Select squares on the map, then press Ctrl+L (or click Add) to put them in "
+                                     f"{layer.name}.", 8000)
         self.update_paint_bar()
 
     # ------------------------------------------------------------ help

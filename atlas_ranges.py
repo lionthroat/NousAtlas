@@ -1,23 +1,32 @@
-"""Range layers: where each plant or animal lives, painted over a map sheet.
+"""Layers: anything with a footprint on a map (creatures, plants, characters,
+paths, quests), painted over a map sheet.
 
-A layer belongs to one creature (or plant). For each map it records, per
-time block (the game's six 4-hour ticks: 00, 04, 08, 12, 16, 20), which
-squares it's found in and how often: common, uncommon or rare.
+Each workbook says how its world keeps time and whether it rates how common
+things are (Format -> Layer times and rarity):
 
-On disk this is a plain sheet called "Ranges" (Creature | Map | Times |
-Abundance | Squares | Colour), with squares written the way the Gazetteer
-writes them ("I6", "G9:K12"), so Excel and scripts can read it too. Atlas
-rewrites that sheet on save; in Atlas you paint instead of typing.
+- time: none (things are just there), Day / Night, Dawn / Day / Dusk / Night,
+  hourly, the Biomes six ticks, or a list of your own periods, optionally
+  grouped (e.g. Day = 08, 12, 16)
+- rarity: off (a square either has the thing or not), or up to three named
+  levels, most common first
+
+A layer records, per map and per period, which squares it's in (and at what
+level, when rarity is on). On disk it's a plain sheet called "Ranges"
+(Layer | Map | Times | Abundance | Squares | Colour | Style), with squares
+written the way the Gazetteer writes them ("I6", "G9:K12"). Atlas rewrites
+that sheet on save.
 """
 
+import colorsys
 import re
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygon
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QComboBox, QFrame,
-                               QTableWidget, QTableWidgetItem,
-                               QHBoxLayout, QInputDialog, QLabel, QListWidget,
-                               QListWidgetItem, QMenu, QMessageBox, QPushButton,
+from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygon, QPolygonF
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QComboBox,
+                               QDialog, QDialogButtonBox, QFrame, QHBoxLayout,
+                               QInputDialog, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit,
+                               QPushButton, QTableWidget, QTableWidgetItem,
                                QToolButton, QVBoxLayout, QWidget)
 from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -25,46 +34,201 @@ from atlas_formula import col_to_num, num_to_col
 from atlas_model import Book, RANGES_SHEET
 from atlas_theme import LAYER_COLORS, qcolor
 
+# The Biomes six ticks (also the preset of that name)
 BLOCKS = [0, 4, 8, 12, 16, 20]
 DAY = {8, 12, 16}            # 08:00-20:00
 NIGHT = {20, 0, 4}           # 20:00-08:00
 LEVELS = {3: "common", 2: "uncommon", 1: "rare"}
-LEVEL_NAMES = {v: k for k, v in LEVELS.items()}
 ALPHA = {3: 215, 2: 135, 1: 70}
-BRUSH_OFF = 9                # the brush row's Off button (Qt reserves -1)
+BRUSH_OFF = 9                # kept for older callers
 HEADERS = ["Layer", "Map", "Times", "Abundance", "Squares", "Colour", "Style"]
 STYLES = {"area": "Area", "path": "Path", "marker": "Marker"}
+FADE = 0.3                   # other layers' areas, when only the selected one is in focus
+
+
+# ---------------------------------------------------------------- time and rarity
+
+
+class TimeScheme:
+    """How a workbook's world keeps time."""
+
+    PRESETS = {
+        "none": "No time (things are just there)",
+        "daynight": "Day / Night",
+        "four": "Dawn / Day / Dusk / Night",
+        "hourly": "Hourly (24)",
+        "biomes": "Six 4-hour ticks (00, 04 … 20), grouped Day / Night",
+        "custom": "My own periods",
+    }
+
+    def __init__(self, preset, periods, groups):
+        self.preset = preset
+        self.periods = list(periods)             # [(id, label)]
+        self.ids = [p for p, _ in self.periods]
+        self.labels = dict(self.periods)
+        self.groups = [(n, frozenset(g)) for n, g in groups if g]
+        self.all = frozenset(self.ids)
+        # the parts a square splits into in the "split" view (2 to 4), or none
+        if 2 <= len(self.groups) <= 4 and frozenset().union(*[g for _, g in self.groups]) == self.all:
+            self.split = list(self.groups)
+        elif 2 <= len(self.ids) <= 4:
+            self.split = [(self.labels[p], frozenset([p])) for p in self.ids]
+        else:
+            self.split = []
+
+    @classmethod
+    def from_meta(cls, meta):
+        t = meta.get("time") or {"preset": "none"}
+        preset = t.get("preset", "none")
+        if preset == "daynight":
+            return cls(preset, [("day", "Day"), ("night", "Night")], [])
+        if preset == "four":
+            return cls(preset, [("dawn", "Dawn"), ("day", "Day"), ("dusk", "Dusk"), ("night", "Night")], [])
+        if preset == "hourly":
+            return cls(preset, [(h, f"{h:02d}:00") for h in range(24)],
+                       [("Day", set(range(6, 18))), ("Night", set(range(0, 6)) | set(range(18, 24)))])
+        if preset == "biomes":
+            return cls(preset, [(b, f"{b:02d}:00") for b in BLOCKS], [("Day", DAY), ("Night", NIGHT)])
+        if preset == "custom":
+            names = [n for n in t.get("periods", []) if str(n).strip()]
+            if not names:
+                return cls("none", [("always", "Always")], [])
+            groups = [(g, set(m) & set(names)) for g, m in (t.get("groups") or {}).items()]
+            return cls(preset, [(n, n) for n in names], groups)
+        return cls("none", [("always", "Always")], [])
+
+    def has_time(self):
+        return len(self.ids) > 1
+
+    def all_label(self):
+        return "Always" if not self.has_time() else "All day"
+
+    def label(self, pid):
+        return self.labels.get(pid, str(pid))
+
+    def times_label(self, ids):
+        ids = frozenset(ids) & self.all
+        if ids == self.all:
+            return self.all_label()
+        for name, g in self.groups:
+            if ids == g:
+                return name
+        return ", ".join(self.label(p) for p in self.ids if p in ids)
+
+    def parse(self, text):
+        t = str(text or "").strip()
+        low = t.lower()
+        if low in ("", "all", "all day", "always", "any time", "anytime"):
+            return set(self.all)
+        for name, g in self.groups:
+            if low == name.lower():
+                return set(g)
+        out = set()
+        for part in re.split(r"[,;]+", t):
+            part = part.strip()
+            if not part:
+                continue
+            for pid, lab in self.periods:
+                if part.lower() in (str(lab).lower(), str(pid).lower()):
+                    out.add(pid)
+                    break
+            else:
+                m = re.match(r"(\d{1,2})(?::00)?$", part)
+                if m and int(m.group(1)) in self.all:
+                    out.add(int(m.group(1)))
+        if not out:
+            # old files: "Day" / "Night" / tick lists written for the six ticks
+            for name, g in (("day", DAY), ("night", NIGHT)):
+                if low == name and set(g) <= set(self.all):
+                    return set(g)
+        return out or set(self.all)
+
+    def options(self):
+        """[(label, ids)] offered for painting and viewing: all, groups, each period."""
+        out = [(self.all_label(), self.all)]
+        out += [(n, g) for n, g in self.groups]
+        out += [(self.label(p), frozenset([p])) for p in self.ids]
+        return out if self.has_time() else out[:1]
+
+    def tone(self, ids):
+        """0 (day/full colour) to 1 (night shade), from the names involved."""
+        names = " ".join(self.label(p).lower() for p in ids) + " " + " ".join(
+            n.lower() for n, g in self.groups if g and g <= frozenset(ids))
+        if "night" in names and not any(w in names for w in ("day", "dawn", "dusk", "morning")):
+            return 1.0
+        if any(w in names for w in ("dawn", "dusk", "twilight", "evening", "morning", "sunset", "sunrise")) \
+                and "day" not in names.split():
+            return 0.5
+        if isinstance(next(iter(ids), None), int) and self.preset in ("biomes", "hourly"):
+            night = next((g for n, g in self.groups if n.lower() == "night"), frozenset())
+            if ids and frozenset(ids) <= night:
+                return 1.0
+        return 0.0
+
+
+def scheme_of(book):
+    """The workbook's time scheme. Workbooks that already have layers keep
+    the Biomes ticks; new ones start with no time."""
+    if "time" not in book.meta:
+        book.meta["time"] = {"preset": "biomes" if _had_layers(book) else "none"}
+    return TimeScheme.from_meta(book.meta)
+
+
+def rarity_of(book):
+    """{3: name, 2: name, 1: name} (fewer when fewer names), or None when off."""
+    if "rarity" not in book.meta:
+        book.meta["rarity"] = ["Common", "Uncommon", "Rare"] if _had_layers(book) else None
+    names = book.meta.get("rarity")
+    if not names:
+        return None
+    return {3 - i: n for i, n in enumerate(names[:3])}
+
+
+def _had_layers(book):
+    return bool(book.meta.get("ranges_sheet")) or book.sheet(RANGES_SHEET) is not None
+
+
+def level_name(book, lv):
+    r = rarity_of(book)
+    return (r or {}).get(lv, "here") if lv else "not here"
+
+
+def alpha_for(book, lv):
+    return ALPHA[3] if rarity_of(book) is None else ALPHA.get(lv, ALPHA[3])
+
+
+def times_label(blocks, book=None):
+    """Kept for callers that only know the Biomes ticks."""
+    scheme = scheme_of(book) if book is not None else TimeScheme.from_meta({"time": {"preset": "biomes"}})
+    return scheme.times_label(blocks)
 
 
 def block_label(b):
-    return f"{b:02d}:00"
+    return f"{b:02d}:00" if isinstance(b, int) else str(b)
 
 
-def times_label(blocks):
-    blocks = set(blocks)
-    if blocks == set(BLOCKS):
-        return "All day"
-    if blocks == DAY:
-        return "Day"
-    if blocks == NIGHT:
-        return "Night"
-    return ", ".join(block_label(b) for b in BLOCKS if b in blocks)
+def mix(hex_a, hex_b, t):
+    a = [int(hex_a[i:i + 2], 16) for i in (0, 2, 4)]
+    b = [int(hex_b[i:i + 2], 16) for i in (0, 2, 4)]
+    return "%02X%02X%02X" % tuple(round(x * (1 - t) + y * t) for x, y in zip(a, b))
 
 
-def parse_times(text):
-    t = str(text or "").strip().lower()
-    if t in ("", "all", "all day", "always"):
-        return set(BLOCKS)
-    if t == "day":
-        return set(DAY)
-    if t == "night":
-        return set(NIGHT)
-    out = set()
-    for part in re.split(r"[,;\s]+", t):
-        m = re.match(r"(\d{1,2})(?::00)?$", part)
-        if m and int(m.group(1)) in BLOCKS:
-            out.add(int(m.group(1)))
-    return out or set(BLOCKS)
+def night_shade(hex6):
+    """The night version of a layer colour: darker and a little bluer."""
+    r, g, b = (int(hex6[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    r, g, b = colorsys.hsv_to_rgb(h, min(1.0, s * 1.1), v * 0.52)
+    nr, ng, nb = 0.20, 0.24, 0.42
+    m = 0.28
+    r, g, b = r * (1 - m) + nr * m, g * (1 - m) + ng * m, b * (1 - m) + nb * m
+    return "%02X%02X%02X" % (round(r * 255), round(g * 255), round(b * 255))
+
+
+def toned(hex6, t):
+    return hex6 if t <= 0 else night_shade(hex6) if t >= 1 else mix(hex6, night_shade(hex6), t)
+
+
+# ---------------------------------------------------------------- squares
 
 
 def square_label(sq):
@@ -114,24 +278,31 @@ def squares_text(squares):
     return ", ".join(parts)
 
 
+# ---------------------------------------------------------------- layers
+
+
 class Layer:
     def __init__(self, name, color):
         self.name = name
         self.color = color
         self.visible = True
         self.style = "area"      # area (fill), path (a line through squares) or marker (a dot)
-        self.maps = {}           # map title -> {block: {(x, y): level}}
+        self.maps = {}           # map title -> {period id: {(x, y): level}}
 
     def level(self, map_title, block, sq):
         return self.maps.get(map_title, {}).get(block, {}).get(sq, 0)
+
+    def present(self, map_title, sq):
+        return any(cells.get(sq) for cells in self.maps.get(map_title, {}).values())
 
     def has_map(self, map_title):
         return any(self.maps.get(map_title, {}).values())
 
 
 class Ranges:
-    def __init__(self):
+    def __init__(self, scheme=None):
         self.layers = []
+        self.scheme = scheme or TimeScheme.from_meta({"time": {"preset": "biomes"}})
 
     def get(self, name):
         for layer in self.layers:
@@ -147,8 +318,10 @@ class Ranges:
         return layer
 
     def paint(self, layer, map_title, blocks, squares, level):
+        if layer.style != "area" or not self.scheme.has_time():
+            blocks = self.scheme.all          # paths, markers and timeless worlds: just there
         if layer.style != "area":
-            blocks, level = BLOCKS, (3 if level else 0)     # paths and markers are just there
+            level = 3 if level else 0
         m = layer.maps.setdefault(map_title, {})
         for b in blocks:
             cells = m.setdefault(b, {})
@@ -159,10 +332,10 @@ class Ranges:
                     cells.pop(sq, None)
 
     def who(self, map_title, sq):
-        """[(layer, {block: level})] for one square."""
+        """[(layer, {period: level})] for one square."""
         out = []
         for layer in self.layers:
-            levels = {b: layer.level(map_title, b, sq) for b in BLOCKS}
+            levels = {b: layer.level(map_title, b, sq) for b in self.scheme.ids}
             if any(levels.values()):
                 out.append((layer, levels))
         return out
@@ -176,16 +349,42 @@ class Ranges:
         for layer in self.layers:
             layer.maps.pop(title, None)
 
+    def convert(self, new):
+        """Move every layer to a new time scheme. Periods both schemes share
+        keep their squares; anything else becomes 'all the time'."""
+        old = self.scheme
+        common = old.all & new.all
+        for layer in self.layers:
+            for m, periods in list(layer.maps.items()):
+                union = {}
+                for cells in periods.values():
+                    for sq, lv in cells.items():
+                        if lv:
+                            union[sq] = max(union.get(sq, 0), lv)
+                kept = {p: dict(c) for p, c in periods.items() if p in common}
+                covered = {sq for c in kept.values() for sq in c}
+                fresh = {p: dict(kept.get(p, {})) for p in new.ids}
+                for sq, lv in union.items():
+                    if sq not in covered:
+                        for p in new.ids:
+                            fresh[p][sq] = lv
+                layer.maps[m] = fresh
+        self.scheme = new
+
     # -- the Ranges sheet
     @classmethod
     def load(cls, book):
-        r = cls()
+        scheme = scheme_of(book)
+        rarity_of(book)
+        r = cls(scheme)
         title = book.meta.get("ranges_sheet", RANGES_SHEET)
         ws = book.sheet(title)
         heads = [str(ws.cell(1, i + 1).value or "") for i in range(6)] if ws is not None else []
         if not heads or heads[0] not in ("Layer", "Creature") or heads[1:] != HEADERS[1:6]:
             return r
         book.meta["ranges_sheet"] = title
+        names = {v.lower(): k for k, v in (rarity_of(book) or {}).items()}
+        names.update({v: k for k, v in LEVELS.items()})
         for row in ws.iter_rows(min_row=2, values_only=True):
             row = list(row) + [None] * 7
             name, map_title, times, level, squares, color, style = row[:7]
@@ -197,8 +396,8 @@ class Ranges:
             if str(style or "").strip().lower() in STYLES:
                 layer.style = str(style).strip().lower()
             if map_title:
-                lv = LEVEL_NAMES.get(str(level or "common").strip().lower(), 3)
-                r.paint(layer, str(map_title), parse_times(times), parse_squares(squares), lv)
+                lv = names.get(str(level or "").strip().lower(), 3)
+                r.paint(layer, str(map_title), scheme.parse(times), parse_squares(squares), lv)
         return r
 
     def write(self, book):
@@ -218,28 +417,29 @@ class Ranges:
         for i, h in enumerate(HEADERS, 1):
             cell = ws.cell(1, i, h)
             cell.font, cell.fill = head_font, head_fill
-        widths = [26, 22, 22, 12, 60, 10, 10]
-        for i, w in enumerate(widths, 1):
+        for i, w in enumerate([26, 22, 22, 12, 60, 10, 10], 1):
             ws.column_dimensions[num_to_col(i)].width = w
         ws.freeze_panes = "A2"
+        scheme = self.scheme
+        rarity = rarity_of(book)
         row = 2
         for layer in self.layers:
             wrote = False
-            for map_title, blocks in layer.maps.items():
-                # one row per (abundance, set of times that share exactly the same squares)
+            for map_title, periods in layer.maps.items():
                 rows_out = []
                 for lv in (3, 2, 1):
                     by_squares = {}
-                    for b in BLOCKS:
-                        sqs = frozenset(sq for sq, v in blocks.get(b, {}).items() if v == lv)
+                    for p in scheme.ids:
+                        sqs = frozenset(sq for sq, v in periods.get(p, {}).items() if v == lv)
                         if sqs:
-                            by_squares.setdefault(sqs, set()).add(b)
-                    for sqs, bs in by_squares.items():
-                        rows_out.append((lv, bs, sqs))
-                rows_out.sort(key=lambda x: (min(BLOCKS.index(b) for b in x[1]) if x[1] != NIGHT else -1, -x[0]))
-                for lv, bs, sqs in rows_out:
-                    values = [layer.name, map_title, times_label(bs), LEVELS[lv], squares_text(sqs), layer.color,
-                              layer.style]
+                            by_squares.setdefault(sqs, set()).add(p)
+                    for sqs, ps in by_squares.items():
+                        rows_out.append((lv, ps, sqs))
+                rows_out.sort(key=lambda x: (min(scheme.ids.index(p) for p in x[1]), -x[0]))
+                for lv, ps, sqs in rows_out:
+                    abundance = (rarity or {}).get(lv, "") if rarity else ""
+                    values = [layer.name, map_title, scheme.times_label(ps), abundance, squares_text(sqs),
+                              layer.color, layer.style]
                     for i, v in enumerate(values, 1):
                         ws.cell(row, i, v).alignment = Alignment(vertical="top", wrap_text=(i == 5))
                     ws.cell(row, 6).fill = PatternFill("solid", fgColor="FF" + layer.color)
@@ -309,23 +509,7 @@ def square_cell(info, sq):
     return info["row"] + sq[1] - 1, info["col"] + sq[0] - 1
 
 
-# ---------------------------------------------------------------- drawing
-
-
-def night_shade(hex6):
-    """The night version of a layer colour: darker and a little bluer."""
-    import colorsys
-    r, g, b = (int(hex6[i:i + 2], 16) / 255 for i in (0, 2, 4))
-    h, s, v = colorsys.rgb_to_hsv(r, g, b)
-    r, g, b = colorsys.hsv_to_rgb(h, min(1.0, s * 1.1), v * 0.52)
-    nr, ng, nb = 0.20, 0.24, 0.42                     # a night blue to lean toward
-    mix = 0.28
-    r, g, b = r * (1 - mix) + nr * mix, g * (1 - mix) + ng * mix, b * (1 - mix) + nb * mix
-    return "%02X%02X%02X" % (round(r * 255), round(g * 255), round(b * 255))
-
-
-def view_blocks(view):
-    return {"day": DAY, "night": NIGHT, "all": set(BLOCKS)}.get(view, {view} if isinstance(view, int) else set(BLOCKS))
+# ---------------------------------------------------------------- view state
 
 
 class ViewState:
@@ -338,21 +522,48 @@ class ViewState:
         self.view = "split" if on else "all"
 
     def __init__(self):
-        self.blocks = set(BLOCKS)
-        self.view = "split"
+        self.blocks = None           # the times Add/brush paints (None = all of them)
+        self.view = "split"          # "split", "all", or a frozenset of periods
         self.level = 3
-        self.painting = False
-        self.layer = None            # name of the layer being painted
+        self.painting = False        # paint by dragging
+        self.layer = None            # the selected layer
         self.solo = None
-        self.all_areas = False       # False: only the selected layer's area draws (paths/markers always do)
+        self.all_areas = False       # False: other layers' areas fade (paths/markers always show)
+
+    def paint_blocks(self, scheme):
+        if self.blocks is None or not set(self.blocks) <= set(scheme.all) or not self.blocks:
+            return set(scheme.all)
+        return set(self.blocks)
+
+
+def view_parts(scheme, view):
+    """[(label, ids, tone)] the view shows: several parts in split view."""
+    if view == "split" and scheme.split:
+        n = len(scheme.split)
+        return [(lab, ids, scheme.tone(ids)) for lab, ids in scheme.split]
+    ids = scheme.all if view in ("all", "split", None) else frozenset(view) & scheme.all or scheme.all
+    tone = scheme.tone(ids) if ids != scheme.all else 0.0
+    return [(scheme.times_label(ids), ids, tone)]
+
+
+def view_blocks(view, scheme=None):
+    scheme = scheme or TimeScheme.from_meta({"time": {"preset": "biomes"}})
+    named = {"day": DAY, "night": NIGHT, "all": scheme.all}
+    if isinstance(view, str) and view in named:
+        return set(named[view])
+    if isinstance(view, int):
+        return {view}
+    return set(view) if view and view != "split" else set(scheme.all)
+
+
+# ---------------------------------------------------------------- paths
 
 
 def path_end(book, layer, map_title, sq, toward, info):
     """How a path ends in a square with one neighbour: 'run' (straight on to
     the far edge) or 'end' (stops in the square). Ends on the edge of the map
     run off it unless set otherwise."""
-    label = square_label(sq)
-    mode = book.meta.get("path_ends", {}).get(layer.name, {}).get(map_title, {}).get(label)
+    mode = book.meta.get("path_ends", {}).get(layer.name, {}).get(map_title, {}).get(square_label(sq))
     if mode:
         return mode
     dx, dy = toward
@@ -362,17 +573,17 @@ def path_end(book, layer, map_title, sq, toward, info):
 
 
 def path_ends_here(book, map_title, sq):
-    """[(layer, toward)] for each visible path that ends in this square."""
+    """[(layer, toward)] for each path that ends in this square."""
     out = []
     for layer in book.ranges.layers:
-        if layer.style != "path" or not layer.level(map_title, 0, sq):
+        if layer.style != "path" or not layer.present(map_title, sq):
             continue
         dirs = []
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
-                if (dx or dy) and layer.level(map_title, 0, (sq[0] + dx, sq[1] + dy)):
-                    if dx and dy and (layer.level(map_title, 0, (sq[0] + dx, sq[1]))
-                                      or layer.level(map_title, 0, (sq[0], sq[1] + dy))):
+                if (dx or dy) and layer.present(map_title, (sq[0] + dx, sq[1] + dy)):
+                    if dx and dy and (layer.present(map_title, (sq[0] + dx, sq[1]))
+                                      or layer.present(map_title, (sq[0], sq[1] + dy))):
                         continue
                     dirs.append((dx, dy))
         if len(dirs) == 1:
@@ -380,13 +591,19 @@ def path_ends_here(book, map_title, sq):
     return out
 
 
+# ---------------------------------------------------------------- drawing
+
+
 class Overlay:
-    """Paints visible layers onto map squares (called by the grid).
-    Area layers fill (side by side when several share a square), paths draw
-    a line joining neighbouring squares, markers draw a dot."""
+    """Paints layers onto map squares (called by the grid). Areas fill (split
+    by time in the split view; several areas side by side), paths draw a line
+    joining neighbouring squares, markers draw a dot."""
 
     def __init__(self, window):
         self.window = window
+
+    def _levels(self, layer, map_title, sq, parts):
+        return [max((layer.level(map_title, b, sq) for b in ids), default=0) for _, ids, _ in parts]
 
     def line_through(self, ws, row, col):
         """True when a path or marker is drawn on this square (labels get a backing)."""
@@ -401,23 +618,13 @@ class Overlay:
         for layer in book.ranges.layers:
             if layer.style == "area" or (st.solo and layer.name != st.solo) or (not st.solo and not layer.visible):
                 continue
-            if any(self._view(layer, ws.title, sq)):
+            if layer.present(ws.title, sq):
                 return True
         return False
 
-    def _view(self, layer, map_title, sq):
-        """(day level, night level) in split view, else (level, level)."""
-        st = self.window.range_state
-        if st.view == "split":
-            d = max((layer.level(map_title, b, sq) for b in DAY), default=0)
-            n = max((layer.level(map_title, b, sq) for b in NIGHT), default=0)
-            return d, n
-        lv = max((layer.level(map_title, b, sq) for b in view_blocks(st.view)), default=0)
-        return lv, lv
-
     def paint(self, p, ws, row, col, rect):
         book = self.window.book
-        if book is None or book.ranges is None:
+        if book is None or book.ranges is None or not self.window.layers_showing():
             return
         info = book.meta["maps"].get(ws.title)
         if not info:
@@ -425,21 +632,22 @@ class Overlay:
         sq = map_square(info, row, col)
         if sq is None:
             return
-        if not self.window.layers_showing():
-            return
         st = self.window.range_state
+        scheme = book.ranges.scheme
+        parts = view_parts(scheme, st.view)
         areas, lines, marks = [], [], []
         for layer in book.ranges.layers:
             if st.solo and layer.name != st.solo:
                 continue
             if not st.solo and not layer.visible:
                 continue
-            if not st.solo and not st.all_areas and layer.style == "area" and layer.name != st.layer:
-                continue
-            d, n = self._view(layer, ws.title, sq)
-            if not (d or n):
-                continue
-            {"path": lines, "marker": marks}.get(layer.style, areas).append((layer, d, n))
+            if layer.style == "area":
+                lvs = self._levels(layer, ws.title, sq, parts)
+                if any(lvs):
+                    focus = st.solo or st.all_areas or layer.name == st.layer
+                    areas.append((layer, lvs, 1.0 if focus else FADE))
+            elif layer.present(ws.title, sq):
+                (lines if layer.style == "path" else marks).append(layer)
         if not (areas or lines or marks):
             return
         inner = rect.adjusted(0, 0, -1, -1)
@@ -447,74 +655,81 @@ class Overlay:
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setPen(Qt.NoPen)
         k = len(areas)
-        for i, (layer, d, n) in enumerate(areas):
+        for i, (layer, lvs, fade) in enumerate(areas):
             x1 = inner.left() + inner.width() * i // k
             x2 = inner.left() + inner.width() * (i + 1) // k
             stripe = QRect(x1, inner.top(), x2 - x1, inner.height())
-            if st.view != "split":
-                night_view = st.view == "night" or (isinstance(st.view, int) and st.view in NIGHT)
-                p.fillRect(stripe, qcolor(night_shade(layer.color) if night_view else layer.color, ALPHA[d]))
-                continue
-            tl, br = stripe.topLeft(), stripe.bottomRight()
-            tr, bl = stripe.topRight(), stripe.bottomLeft()
-            if d:
-                p.setBrush(qcolor(layer.color, ALPHA[d]))
-                p.drawPolygon(QPolygon([tl, tr, bl]))
-            if n:
-                p.setBrush(qcolor(night_shade(layer.color), ALPHA[n]))
-                p.drawPolygon(QPolygon([tr, br, bl]))
-            if d and n:
-                p.setPen(QPen(QColor(20, 20, 26, 110), 1))
-                p.drawLine(tr, bl)
+            shapes = _part_shapes(stripe, len(parts))
+            for (lab, ids, tone), lv, shape in zip(parts, lvs, shapes):
+                if lv:
+                    p.setBrush(qcolor(toned(layer.color, tone), int(alpha_for(book, lv) * fade)))
+                    p.drawPolygon(shape)
+            if len(parts) > 1 and sum(1 for lv in lvs if lv) > 1 and fade == 1.0:
+                p.setPen(QPen(QColor(20, 20, 26, 100), 1))
+                for a, b in _part_seams(stripe, len(parts)):
+                    p.drawLine(a, b)
                 p.setPen(Qt.NoPen)
         c = QPointF(inner.center())
         size = min(inner.width(), inner.height())
-        for layer, d, n in lines:
-            # a line from the centre toward every neighbour on the same path
-            ends, dirs = [], []
+        for layer in lines:
+            dirs = []
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
-                    if (dx, dy) == (0, 0):
+                    if (dx, dy) == (0, 0) or not layer.present(ws.title, (sq[0] + dx, sq[1] + dy)):
                         continue
-                    nb = (sq[0] + dx, sq[1] + dy)
-                    if not any(self._view(layer, ws.title, nb)):
+                    if dx and dy and (layer.present(ws.title, (sq[0] + dx, sq[1]))
+                                      or layer.present(ws.title, (sq[0], sq[1] + dy))):
                         continue
-                    if dx and dy:
-                        # skip a diagonal when the two squares beside it already join them
-                        a = self._view(layer, ws.title, (sq[0] + dx, sq[1]))
-                        b = self._view(layer, ws.title, (sq[0], sq[1] + dy))
-                        if any(a) or any(b):
-                            continue
                     dirs.append((dx, dy))
             if len(dirs) == 1 and path_end(book, layer, ws.title, sq, dirs[0], info) == "run":
                 dx, dy = dirs[0]
-                dirs.append((-dx, -dy))         # carry on straight through to the far edge
-            for dx, dy in dirs:
-                ends.append(QPointF(c.x() + dx * inner.width() / 2, c.y() + dy * inner.height() / 2))
+                dirs.append((-dx, -dy))
+            ends = [QPointF(c.x() + dx * inner.width() / 2, c.y() + dy * inner.height() / 2) for dx, dy in dirs]
             width = max(3.0, size * 0.17)
             for pen_color, extra in ((QColor(20, 20, 26, 110), 2.0), (qcolor(layer.color), 0.0)):
                 w2 = width + extra
                 p.setPen(QPen(pen_color, w2, Qt.SolidLine, Qt.FlatCap, Qt.RoundJoin))
                 for e in ends:
                     p.drawLine(c, e)
-                # a round joint (or a rounded stop) at the centre
                 p.setPen(Qt.NoPen)
                 p.setBrush(pen_color)
                 p.drawEllipse(c, w2 / 2, w2 / 2)
                 p.setBrush(Qt.NoBrush)
-        for i, (layer, d, n) in enumerate(marks):
-            level = max(d, n)
+        for i, layer in enumerate(marks):
             r = size * 0.2
             off = (i - (len(marks) - 1) / 2) * r * 2.2
-            centre = QPointF(c.x() + off, c.y())
             p.setPen(QPen(QColor(20, 20, 26, 170), 2))
-            p.setBrush(qcolor(layer.color, 255 if level == 3 else ALPHA[level] + 30))
-            p.drawEllipse(centre, r, r)
+            p.setBrush(qcolor(layer.color))
+            p.drawEllipse(QPointF(c.x() + off, c.y()), r, r)
         p.restore()
 
 
+def _part_shapes(r, n):
+    """Polygons a square splits into: whole, diagonal halves, or wedges."""
+    tl, tr = QPointF(r.left(), r.top()), QPointF(r.right() + 1, r.top())
+    bl, br = QPointF(r.left(), r.bottom() + 1), QPointF(r.right() + 1, r.bottom() + 1)
+    c = QPointF(r.center()) + QPointF(0.5, 0.5)
+    if n <= 1:
+        return [QPolygonF([tl, tr, br, bl])]
+    if n == 2:
+        return [QPolygonF([tl, tr, bl]), QPolygonF([tr, br, bl])]
+    top, right, bottom, left = (QPolygonF([tl, tr, c]), QPolygonF([tr, br, c]),
+                                QPolygonF([br, bl, c]), QPolygonF([bl, tl, c]))
+    if n == 3:
+        return [top, right, QPolygonF([br, bl, tl, c])]
+    return [top, right, bottom, left]
+
+
+def _part_seams(r, n):
+    tl, tr = QPointF(r.left(), r.top()), QPointF(r.right() + 1, r.top())
+    bl, br = QPointF(r.left(), r.bottom() + 1), QPointF(r.right() + 1, r.bottom() + 1)
+    if n == 2:
+        return [(tr, bl)]
+    return [(tl, br), (tr, bl)]
+
+
 class Brush:
-    """The grid's paint tool when painting ranges."""
+    """Paint by dragging (optional): the grid's tool while it's switched on."""
 
     def __init__(self, window):
         self.window = window
@@ -536,8 +751,9 @@ class Brush:
         layer = w.book.ranges.get(w.range_state.layer)
         if layer is None:
             return
-        w.book.ranges.paint(layer, w.current_ws().title, w.range_state.blocks, [sq],
-                            0 if self.stroke["erase"] else w.range_state.level)
+        st = w.range_state
+        w.book.ranges.paint(layer, w.current_ws().title, st.paint_blocks(w.book.ranges.scheme), [sq],
+                            0 if self.stroke["erase"] else (st.level or 3))
         w.grid.viewport().update()
 
     def press(self, row, col, e):
@@ -549,7 +765,7 @@ class Brush:
         if self.stroke is not None:
             self.window.book.done("ranges")
         self.window.book.begin([])
-        erase = bool(e.modifiers() & (Qt.ShiftModifier | Qt.AltModifier)) or self.window.range_state.level == 0
+        erase = bool(e.modifiers() & Qt.ShiftModifier) or self.window.range_state.level == 0
         self.stroke = {"done": set(), "erase": erase}
         self._apply(row, col)
         return True
@@ -586,6 +802,8 @@ def swatch(hex6, size=14):
 
 
 class RangesPanel(QWidget):
+    """The Layers section of the side panel."""
+
     changed = Signal()
 
     def __init__(self, window):
@@ -593,7 +811,7 @@ class RangesPanel(QWidget):
         self.window = window
         self.st = window.range_state
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setContentsMargins(10, 8, 10, 10)
         lay.setSpacing(8)
 
         self.title = QLabel()
@@ -621,58 +839,19 @@ class RangesPanel(QWidget):
         b.setContentsMargins(0, 0, 0, 0)
         b.setSpacing(8)
 
-        # Show: what the map displays. Only changes the view.
-        self.view_box = QWidget()
-        vb = QVBoxLayout(self.view_box)
-        vb.setContentsMargins(0, 0, 0, 0)
-        vb.setSpacing(4)
-        lbl = QLabel("Show")
-        lbl.setObjectName("faint")
-        vb.addWidget(lbl)
-        self.view_group = QButtonGroup(self)
-        self.view_btns = {}
-        row = QHBoxLayout()
-        row.setSpacing(3)
-        for key, label, tip in (("split", "Day / night", "Each square: day in the bright top-left half, night in the "
-                                                         "dark bottom-right half"),
-                                ("day", "Day", "08:00–20:00"), ("night", "Night", "20:00–08:00"),
-                                ("all", "All", "Anywhere at any time, one colour")):
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setToolTip(tip)
-            self.view_group.addButton(btn)
-            self.view_btns[key] = btn
-            btn.clicked.connect(lambda _=False, k=key: self.set_view(k))
-            row.addWidget(btn)
-        row.addStretch()
-        vb.addLayout(row)
-        row = QHBoxLayout()
-        row.setSpacing(3)
-        for blk in BLOCKS:
-            btn = QPushButton(f"{blk:02d}")
-            btn.setCheckable(True)
-            btn.setFixedWidth(34)
-            btn.setToolTip(f"Show {block_label(blk)}–{block_label((blk + 4) % 24)} only")
-            self.view_group.addButton(btn)
-            self.view_btns[blk] = btn
-            btn.clicked.connect(lambda _=False, k=blk: self.set_view(k))
-            row.addWidget(btn)
-        row.addStretch()
-        vb.addLayout(row)
-        b.addWidget(self.view_box)
-
+        # the layers
         self.list = QListWidget()
         self.list.setMinimumHeight(90)
         self.list.setMaximumHeight(170)
-        self.list.setToolTip("Anything with a footprint on the map: creatures, plants, characters, hazards, quests.\n"
-                             "Tick to show; double-click to show only that one; right-click for more.")
+        self.list.setToolTip("Anything with a footprint on the map: creatures, plants, characters, paths, quests.\n"
+                             "Select one to work on it. Tick to show; double-click to show only that one.")
         self.list.itemChanged.connect(self.item_changed)
         self.list.currentItemChanged.connect(self.current_layer_changed)
         self.list.itemDoubleClicked.connect(self.solo_toggle)
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self.layer_menu)
         b.addWidget(self.list)
-        self.empty_note = QLabel("Nothing here yet: click New, or select squares and press Ctrl+L.")
+        self.empty_note = QLabel("No layers yet. Click New, then select squares on the map and click Add.")
         self.empty_note.setObjectName("muted")
         self.empty_note.setWordWrap(True)
         b.addWidget(self.empty_note)
@@ -683,92 +862,86 @@ class RangesPanel(QWidget):
             btn.clicked.connect(fn)
             row.addWidget(btn)
         b.addLayout(row)
+
+        # the main action: put the selected squares in (or out of) the layer
+        row = QHBoxLayout()
+        self.add_btn = QPushButton("Add selected squares")
+        self.add_btn.setObjectName("primary")
+        self.add_btn.setToolTip("Put the squares selected on the map into this layer (Ctrl+L)")
+        self.add_btn.clicked.connect(lambda: self.window.add_selection_to_layer(remove=False))
+        self.remove_btn = QPushButton("Remove")
+        self.remove_btn.setToolTip("Take the selected squares out of this layer (Ctrl+Shift+L)")
+        self.remove_btn.clicked.connect(lambda: self.window.add_selection_to_layer(remove=True))
+        row.addWidget(self.add_btn, 1)
+        row.addWidget(self.remove_btn)
+        b.addLayout(row)
+        # options for Add: when, and how common (each only if the workbook uses them)
+        self.opts = QWidget()
+        o = QHBoxLayout(self.opts)
+        o.setContentsMargins(0, 0, 0, 0)
+        self.for_label = QLabel("For")
+        self.for_label.setObjectName("faint")
+        self.for_box = QComboBox()
+        self.for_box.activated.connect(self.for_chosen)
+        self.as_label = QLabel("As")
+        self.as_label.setObjectName("faint")
+        self.as_box = QComboBox()
+        self.as_box.activated.connect(self.as_chosen)
+        for w_ in (self.for_label, self.for_box, self.as_label, self.as_box):
+            o.addWidget(w_)
+        o.addStretch()
+        b.addWidget(self.opts)
+
+        # what the map shows (only if the world keeps time)
+        self.view_row = QWidget()
+        v = QHBoxLayout(self.view_row)
+        v.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel("Show")
+        lbl.setObjectName("faint")
+        v.addWidget(lbl)
+        self.view_box = QComboBox()
+        self.view_box.activated.connect(self.view_chosen)
+        v.addWidget(self.view_box, 1)
+        b.addWidget(self.view_row)
+
         row = QHBoxLayout()
         lbl = QLabel("Draw as")
         lbl.setObjectName("faint")
         row.addWidget(lbl)
         self.style_box = QComboBox()
-        for key, label in STYLES.items():
+        for key in STYLES:
             self.style_box.addItem({"area": "Area (fills squares)", "path": "Path (a line: roads, tracks, rivers)",
                                     "marker": "Marker (a dot: one-off things)"}[key], key)
         self.style_box.activated.connect(self.style_chosen)
         row.addWidget(self.style_box, 1)
         b.addLayout(row)
-        self.all_box = QCheckBox("Show every ticked area at once")
-        self.all_box.setToolTip("Off: only the selected layer's area is drawn, so the map stays readable.\n"
-                                "Paths and markers always draw.")
+        self.all_box = QCheckBox("Show every ticked area at full strength")
+        self.all_box.setToolTip("Off: the selected layer's area is bright and the others fade.\n"
+                                "Paths and markers always show.")
         self.all_box.toggled.connect(self.all_toggled)
         b.addWidget(self.all_box)
+        self.paint_btn = QCheckBox("Paint by dragging on the map")
+        self.paint_btn.setToolTip("Drag over squares to add them (Shift-drag removes). Esc stops.")
+        self.paint_btn.toggled.connect(self.paint_toggled)
+        b.addWidget(self.paint_btn)
         self.solo_note = QPushButton()
         self.solo_note.setFlat(True)
         self.solo_note.setStyleSheet("text-align: left;")
         self.solo_note.clicked.connect(lambda: self.show_all())
         b.addWidget(self.solo_note)
+        self.settings_btn = QPushButton("Times and rarity…")
+        self.settings_btn.setFlat(True)
+        self.settings_btn.setStyleSheet("text-align: left;")
+        self.settings_btn.setToolTip("How this workbook's world keeps time, and whether layers have rarity")
+        self.settings_btn.clicked.connect(lambda: self.window.edit_layer_settings())
+        b.addWidget(self.settings_btn)
 
-        # Brush: one row; choosing a brush starts painting, Off stops
-        lbl = QLabel("Brush")
-        lbl.setObjectName("faint")
-        b.addWidget(lbl)
-        row = QHBoxLayout()
-        row.setSpacing(3)
-        self.level_group = QButtonGroup(self)
-        for lv, label in ((BRUSH_OFF, "Off"), (3, "Common"), (2, "Uncommon"), (1, "Rare"), (0, "Erase")):
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            self.level_group.addButton(btn, lv)
-            row.addWidget(btn)
-        self.level_group.idClicked.connect(self.level_clicked)
-        row.addStretch()
-        b.addLayout(row)
-        # Paint for: which times the brush paints. Only for areas.
-        self.time_box = QWidget()
-        tb = QVBoxLayout(self.time_box)
-        tb.setContentsMargins(0, 0, 0, 0)
-        tb.setSpacing(4)
-        lbl = QLabel("Paint for")
-        lbl.setObjectName("faint")
-        tb.addWidget(lbl)
-        self.paint_group = QButtonGroup(self)
-        self.paint_btns = {}
-        row = QHBoxLayout()
-        row.setSpacing(3)
-        for key, label in (("all", "All day"), ("day", "Day"), ("night", "Night")):
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            self.paint_group.addButton(btn)
-            self.paint_btns[key] = btn
-            btn.clicked.connect(lambda _=False, k=key: self.set_blocks({"all": set(BLOCKS), "day": DAY, "night": NIGHT}[k]))
-            row.addWidget(btn)
-        row.addStretch()
-        tb.addLayout(row)
-        row = QHBoxLayout()
-        row.setSpacing(3)
-        self.block_btns = {}
-        for blk in BLOCKS:
-            btn = QPushButton(f"{blk:02d}")
-            btn.setCheckable(True)
-            btn.setFixedWidth(34)
-            btn.setToolTip(f"Paint {block_label(blk)}–{block_label((blk + 4) % 24)} only")
-            self.paint_group.addButton(btn)
-            self.block_btns[blk] = btn
-            btn.clicked.connect(lambda _=False, k=blk: self.set_blocks({k}))
-            row.addWidget(btn)
-        row.addStretch()
-        tb.addLayout(row)
-        b.addWidget(self.time_box)
-        # kept for the window's own use: painting on / off
-        self.paint_btn = QPushButton()
-        self.paint_btn.setCheckable(True)
-        self.paint_btn.toggled.connect(self.paint_toggled)
-        self.paint_btn.hide()
-        b.addWidget(self.paint_btn)
-
+        # the selected square
         self.here_title = QLabel()
         self.here_title.setWordWrap(True)
         self.here_title.setTextFormat(Qt.RichText)
         b.addWidget(self.here_title)
-        self.here_table = QTableWidget(0, 8)
-        self.here_table.setHorizontalHeaderLabels([""] + [f"{blk:02d}" for blk in BLOCKS] + ["All"])
+        self.here_table = QTableWidget(0, 2)
         self.here_table.verticalHeader().hide()
         self.here_table.setShowGrid(True)
         self.here_table.setSelectionMode(QTableWidget.NoSelection)
@@ -776,10 +949,7 @@ class RangesPanel(QWidget):
         self.here_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.here_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.here_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        hh = self.here_table.horizontalHeader()
-        for i in range(1, 8):
-            self.here_table.setColumnWidth(i, 30 if i < 7 else 34)
-        hh.setStretchLastSection(False)
+        self.here_table.horizontalHeader().setStretchLastSection(False)
         self.here_table.verticalHeader().setDefaultSectionSize(24)
         self.here_table.cellClicked.connect(self.here_clicked)
         b.addWidget(self.here_table)
@@ -792,10 +962,22 @@ class RangesPanel(QWidget):
         b.addWidget(self.here_add)
         self.here_sq = None
         self.here_layers = []
-        b.addStretch(1)                  # spare height goes to the bottom, not between sections
+        self.here_cols = []
+        b.addStretch(1)
         lay.addWidget(self.body, 1)
         lay.addStretch()
         self.refresh()
+
+    # -- helpers
+    def book(self):
+        return self.window.book
+
+    def scheme(self):
+        return self.window.book.ranges.scheme
+
+    def timeless_selected(self):
+        layer = self.book().ranges.get(self.st.layer) if (self.book() and self.st.layer) else None
+        return layer is not None and layer.style != "area"
 
     # -- state <-> controls
     def refresh(self):
@@ -806,35 +988,87 @@ class RangesPanel(QWidget):
         self.no_map.setVisible(not is_map)
         self.body.setVisible(is_map)
         if ws is None:
-            self.title.setText("Layers")
-            self.no_map_text.setText("Open a workbook to paint layers.")
+            self.title.setText("")
+            self.no_map_text.setText("Open a workbook to work with layers.")
             self.btn_detect.hide()
             self.btn_use_sel.hide()
             return
         if not is_map:
             self.title.setText("")
-            maps = [t for t in book.meta["maps"] if book.sheet(t) is not None]
             self.no_map_text.setText(f"{ws.title} isn't a map. Layers live on map sheets; "
                                      "if this sheet has a grid, Atlas can use it.")
             self.btn_detect.show()
             self.btn_use_sel.show()
             return
         self.title.setText(ws.title)
-        self.sync_times()
         self.all_box.blockSignals(True)
         self.all_box.setChecked(self.st.all_areas)
         self.all_box.blockSignals(False)
-        self.sync_brush()
         self.paint_btn.blockSignals(True)
         self.paint_btn.setChecked(self.st.painting)
         self.paint_btn.blockSignals(False)
         self.fill_list()
+        self.fill_options()
         self.update_notes()
         self.update_here()
         self.window.update_paint_bar()
 
+    def fill_options(self):
+        """The For / As / Show boxes, built from the workbook's own scheme."""
+        scheme = self.scheme()
+        st = self.st
+        timeless = self.timeless_selected()
+        # For
+        self.for_box.blockSignals(True)
+        self.for_box.clear()
+        for label, ids in scheme.options():
+            self.for_box.addItem(label, ids)
+        want = frozenset(st.paint_blocks(scheme))
+        for i in range(self.for_box.count()):
+            if self.for_box.itemData(i) == want:
+                self.for_box.setCurrentIndex(i)
+                break
+        self.for_box.blockSignals(False)
+        show_for = scheme.has_time() and not timeless
+        self.for_label.setVisible(show_for)
+        self.for_box.setVisible(show_for)
+        # As
+        rarity = rarity_of(self.book())
+        self.as_box.blockSignals(True)
+        self.as_box.clear()
+        for lv, name in sorted((rarity or {}).items(), reverse=True):
+            self.as_box.addItem(name, lv)
+        idx = self.as_box.findData(st.level)
+        self.as_box.setCurrentIndex(max(0, idx))
+        if rarity and idx < 0:
+            st.level = 3
+        self.as_box.blockSignals(False)
+        show_as = bool(rarity) and not timeless
+        self.as_label.setVisible(show_as)
+        self.as_box.setVisible(show_as)
+        self.opts.setVisible(show_for or show_as)
+        # Show
+        self.view_box.blockSignals(True)
+        self.view_box.clear()
+        if scheme.split:
+            self.view_box.addItem(" / ".join(lab for lab, _ in scheme.split) + " (split squares)", "split")
+        for label, ids in scheme.options():
+            self.view_box.addItem(label, "all" if ids == scheme.all else ids)
+        cur = st.view if st.view in ("split", "all") else frozenset(st.view)
+        if cur == "split" and not scheme.split:
+            st.view = cur = "all"
+        for i in range(self.view_box.count()):
+            if self.view_box.itemData(i) == cur:
+                self.view_box.setCurrentIndex(i)
+                break
+        else:
+            st.view = self.view_box.itemData(0)
+            self.view_box.setCurrentIndex(0)
+        self.view_box.blockSignals(False)
+        self.view_row.setVisible(scheme.has_time())
+
     def fill_list(self):
-        book = self.window.book
+        book = self.book()
         ws = self.window.current_ws()
         self.list.blockSignals(True)
         self.list.clear()
@@ -856,7 +1090,7 @@ class RangesPanel(QWidget):
                 text = layer.name
                 if group:
                     where = [t for t in maps if layer.has_map(t)]
-                    text += f"  · on {', '.join(where)}" if where else "  · not painted yet"
+                    text += f"  · on {', '.join(where)}" if where else "  · nothing added yet"
                 it = QListWidgetItem(swatch(layer.color), text)
                 it.setData(Qt.UserRole, layer.name)
                 it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
@@ -877,41 +1111,38 @@ class RangesPanel(QWidget):
         self.list.blockSignals(False)
         self.sync_style_box()
 
-    def timeless_selected(self):
-        layer = self.window.book.ranges.get(self.st.layer) if (self.window.book and self.st.layer) else None
-        return layer is not None and layer.style != "area"
-
-    def sync_brush(self):
-        """The brush row: Off / Common / Uncommon / Rare / Erase, or Off / Draw / Erase
-        for paths and markers."""
-        st = self.st
-        timeless = self.timeless_selected()
-        if timeless and st.level in (1, 2):
-            st.level = 3
-        self.level_group.button(3).setText("Draw" if timeless else "Common")
-        for lv in (2, 1):
-            self.level_group.button(lv).setVisible(not timeless)
-        self.level_group.button(BRUSH_OFF if not st.painting else st.level).setChecked(True)
-
     def update_notes(self):
         st = self.st
-        timeless = self.timeless_selected()
-        self.time_box.setVisible(not timeless)
-        self.sync_brush()
+        has = bool(self.book() is not None and self.book().ranges.layers)
+        self.empty_note.setVisible(not has)
+        layer = self.book().ranges.get(st.layer) if (has and st.layer) else None
+        self.add_btn.setEnabled(layer is not None)
+        self.remove_btn.setEnabled(layer is not None)
+        self.add_btn.setText(f"Add selected squares to {layer.name}" if layer else "Add selected squares")
         self.solo_note.setText(f"Only {st.solo} is showing · show all")
         self.solo_note.setVisible(bool(st.solo))
-        has = bool(self.window.book is not None and self.window.book.ranges.layers)
-        self.empty_note.setVisible(not has)
 
     def show_all(self):
         self.st.solo = None
         self.update_notes()
         self.window.grid.viewport().update()
 
+    # -- the selected square
+    def _here_columns(self):
+        """[(header, ids)]: one column per period when there are few, per group
+        when there are many, or a single 'Here' column without time."""
+        scheme = self.scheme()
+        if not scheme.has_time():
+            return [("Here", scheme.all)]
+        if len(scheme.ids) <= 8:
+            cols = [(scheme.label(p)[:5].replace(":00", ""), frozenset([p])) for p in scheme.ids]
+        elif scheme.groups:
+            cols = [(n, g) for n, g in scheme.groups]
+        else:
+            cols = []
+        return cols + [("All", scheme.all)]
+
     def update_here(self):
-        """The square editor: every layer on the selected square, by time.
-        Click a slot to cycle common > uncommon > rare > none; the All column
-        sets the whole row."""
         w = self.window
         ws = w.current_ws()
         if ws is None or w.book is None or ws.title not in w.book.meta["maps"]:
@@ -923,17 +1154,24 @@ class RangesPanel(QWidget):
         tbl = self.here_table
         tbl.blockSignals(True)
         if sq is None:
-            self.here_title.setText("<span style='color:gray'>Select a square on the map to edit what's in it.</span>")
+            self.here_title.setText("<span style='color:gray'>Select squares on the map to add them to a layer, "
+                                    "or one square to see what's in it.</span>")
             tbl.setRowCount(0)
             tbl.hide()
             self.here_add.hide()
             self.here_legend.hide()
             tbl.blockSignals(False)
             return
+        scheme = self.scheme()
+        rarity = rarity_of(w.book)
         rows = w.book.ranges.who(ws.title, sq)
         self.here_title.setText(f"<span style='color:{t['group']}'><b>Square {square_label(sq)}</b></span>"
-                                + (f" <span style='color:{t['muted']}'>· click a slot to change it</span>" if rows else
+                                + (f" <span style='color:{t['muted']}'>· click to change</span>" if rows else
                                    f" <span style='color:{t['muted']}'>· nothing here yet</span>"))
+        cols = self._here_columns()
+        self.here_cols = cols
+        tbl.setColumnCount(1 + len(cols))
+        tbl.setHorizontalHeaderLabels([""] + [h for h, _ in cols])
         tbl.setRowCount(len(rows))
         self.here_layers = [layer.name for layer, _ in rows]
         for i, (layer, levels) in enumerate(rows):
@@ -941,50 +1179,43 @@ class RangesPanel(QWidget):
             name.setFlags(Qt.ItemIsEnabled)
             name.setToolTip(layer.name)
             tbl.setItem(i, 0, name)
-            for j, b in enumerate(BLOCKS):
-                lv = levels[b]
-                # filled like the map: solid common, medium uncommon, faint rare, empty none
-                it = QTableWidgetItem("" if lv else "–")
+            for j, (head, ids) in enumerate(cols):
+                lv = max((levels.get(p, 0) for p in ids), default=0)
+                last = j == len(cols) - 1 and len(cols) > 1
+                it = QTableWidgetItem("all" if last else ("" if lv else "–"))
                 it.setTextAlignment(Qt.AlignCenter)
-                it.setForeground(QColor(t["faint"]))
-                if lv:
-                    tone = night_shade(layer.color) if (b in NIGHT and layer.style == "area") else layer.color
-                    it.setBackground(qcolor(tone, ALPHA[lv]))
+                it.setForeground(QColor(t["faint"] if not last else t["muted"]))
+                if lv and not last:
+                    tone = scheme.tone(ids) if layer.style == "area" else 0.0
+                    it.setBackground(qcolor(toned(layer.color, tone), alpha_for(w.book, lv)))
                 it.setFlags(Qt.ItemIsEnabled)
-                it.setToolTip(f"{layer.name} at {block_label(b)}: {LEVELS.get(lv, 'not here')}. Click to change.")
+                what = level_name(w.book, lv)
+                it.setToolTip(f"{layer.name}{'' if not scheme.has_time() else ' · ' + scheme.times_label(ids)}: "
+                              f"{what}. Click to change.")
                 tbl.setItem(i, 1 + j, it)
-            if layer.style != "area":
-                for j in range(6):
-                    it = tbl.item(i, 1 + j)
-                    it.setText("")
-                    it.setToolTip(f"{layer.name} is a {layer.style}: it's simply here. Click to remove it.")
-            top = max(levels.values())
-            all_it = QTableWidgetItem("all" if layer.style == "area" else "on")
-            all_it.setTextAlignment(Qt.AlignCenter)
-            all_it.setForeground(QColor(t["muted"]))
-            all_it.setFlags(Qt.ItemIsEnabled)
-            all_it.setToolTip("Set every time at once (cycles common > uncommon > rare > none)")
-            tbl.setItem(i, 7, all_it)
         tbl.resizeColumnToContents(0)
         tbl.setColumnWidth(0, min(120, max(80, tbl.columnWidth(0))))
+        for j in range(len(cols)):
+            tbl.setColumnWidth(1 + j, 34 if len(cols) > 1 else 60)
         tbl.setFixedHeight(tbl.horizontalHeader().height() + sum(tbl.rowHeight(i) for i in range(len(rows))) + 4)
         tbl.setVisible(bool(rows))
         tbl.setStyleSheet(f"QTableWidget {{ gridline-color: {t['panel']}; background: {t['window']}; }}")
-        def chip(alpha):
-            c = qcolor(t["accent"].lstrip("#"), alpha)
-            return (f"<span style='background-color: rgba({c.red()},{c.green()},{c.blue()},{alpha / 255:.2f})'>"
-                    "&nbsp;&nbsp;&nbsp;&nbsp;</span>")
-        self.here_legend.setText(f"{chip(ALPHA[3])} common &nbsp; {chip(ALPHA[2])} uncommon &nbsp; "
-                                 f"{chip(ALPHA[1])} rare &nbsp; – not here")
-        self.here_legend.setVisible(any(layer.style == "area" for layer, _ in rows))
-        # add another layer to this square
+        if rarity and any(layer.style == "area" for layer, _ in rows):
+            def chip(a):
+                c = qcolor(t["accent"].lstrip("#"), a)
+                return (f"<span style='background-color: rgba({c.red()},{c.green()},{c.blue()},{a / 255:.2f})'>"
+                        "&nbsp;&nbsp;&nbsp;&nbsp;</span>")
+            self.here_legend.setText(" &nbsp; ".join(f"{chip(ALPHA[lv])} {name}" for lv, name in
+                                                     sorted(rarity.items(), reverse=True)))
+            self.here_legend.show()
+        else:
+            self.here_legend.hide()
         others = [l.name for l in w.book.ranges.layers if l.name not in self.here_layers]
         self.here_add.blockSignals(True)
         self.here_add.clear()
         self.here_add.addItem("Add a layer to this square…", None)
         for n in others:
-            layer = w.book.ranges.get(n)
-            self.here_add.addItem(swatch(layer.color), n, n)
+            self.here_add.addItem(swatch(w.book.ranges.get(n).color), n, n)
         self.here_add.addItem("New layer…", "__new__")
         self.here_add.blockSignals(False)
         self.here_add.show()
@@ -998,18 +1229,17 @@ class RangesPanel(QWidget):
         layer = w.book.ranges.get(self.here_layers[row])
         if layer is None:
             return
-        nxt = {3: 2, 2: 1, 1: 0, 0: 3}
-        if layer.style != "area":
-            on = any(layer.level(map_title, b, sq) for b in BLOCKS)
-            blocks, level = set(BLOCKS), 0 if on else 3
-        elif col == 7:
-            top = max(layer.level(map_title, b, sq) for b in BLOCKS)
-            blocks, level = set(BLOCKS), nxt[top] if top else 3
+        head, ids = self.here_cols[col - 1]
+        rarity = rarity_of(w.book)
+        cur = max((layer.level(map_title, p, sq) for p in ids), default=0)
+        if layer.style != "area" or not rarity:
+            level = 0 if cur else 3                          # here / not here
         else:
-            b = BLOCKS[col - 1]
-            blocks, level = {b}, nxt[layer.level(map_title, b, sq)]
+            order = sorted(rarity, reverse=True)             # e.g. [3, 2, 1]
+            seq = order + [0]
+            level = seq[(seq.index(cur) + 1) % len(seq)] if cur in seq else order[0]
         w.book.begin([])
-        w.book.ranges.paint(layer, map_title, blocks, [sq], level)
+        w.book.ranges.paint(layer, map_title, ids, [sq], level)
         w.book.done("ranges")
 
     def here_add_chosen(self, idx):
@@ -1026,53 +1256,39 @@ class RangesPanel(QWidget):
         else:
             layer = w.book.ranges.get(data)
         w.book.begin([])
-        w.book.ranges.paint(layer, map_title, self.st.blocks, [sq], self.st.level or 3)
+        w.book.ranges.paint(layer, map_title, self.st.paint_blocks(self.scheme()), [sq], self.st.level or 3)
         w.book.done("ranges")
 
     # -- handlers
-    def sync_times(self):
-        st = self.st
-        btn = self.view_btns.get(st.view)
-        if btn is not None:
-            btn.setChecked(True)
-        key = {frozenset(BLOCKS): "all", frozenset(DAY): "day", frozenset(NIGHT): "night"}.get(frozenset(st.blocks))
-        if key:
-            self.paint_btns[key].setChecked(True)
-        elif len(st.blocks) == 1:
-            self.block_btns[next(iter(st.blocks))].setChecked(True)
-        else:
-            self.paint_group.setExclusive(False)
-            for b, bb in self.block_btns.items():
-                bb.setChecked(b in st.blocks)
-            for bb in self.paint_btns.values():
-                bb.setChecked(False)
-            self.paint_group.setExclusive(True)
+    def for_chosen(self, idx):
+        self.set_blocks(self.for_box.itemData(idx))
+
+    def as_chosen(self, idx):
+        self.st.level = self.as_box.itemData(idx) or 3
+        self.window.update_paint_bar()
+
+    def view_chosen(self, idx):
+        self.set_view(self.view_box.itemData(idx))
 
     def set_view(self, view):
+        scheme = self.scheme()
+        if view in ("day", "night") or isinstance(view, int):
+            view = frozenset(view_blocks(view, scheme)) & scheme.all
         self.st.view = view
-        self.sync_times()
+        self.fill_options()
         self.window.grid.viewport().update()
-
-    def blocks_clicked(self):
-        chosen = {b for b, btn in self.block_btns.items() if btn.isChecked()}
-        if not chosen:
-            chosen = {next(b for b, btn in self.block_btns.items() if btn is self.sender())}
-        self.set_blocks(chosen, keep_split=True)
 
     def set_blocks(self, blocks, keep_split=False):
-        """Which times the brush paints. Doesn't touch what's shown."""
-        self.st.blocks = set(blocks)
-        self.sync_times()
-        self.update_notes()
+        """Which times Add and the brush put squares in. Doesn't touch the view."""
+        self.st.blocks = set(blocks) if blocks else None
+        self.fill_options()
         self.window.update_paint_bar()
-        self.window.grid.viewport().update()
 
-    def split_toggled(self, on):
-        self.st.split = on
-        self.window.grid.viewport().update()
+    def sync_times(self):
+        self.fill_options()
 
     def item_changed(self, it):
-        layer = self.window.book.ranges.get(it.data(Qt.UserRole))
+        layer = self.book().ranges.get(it.data(Qt.UserRole))
         if layer is not None:
             layer.visible = it.checkState() == Qt.Checked
             self.window.grid.viewport().update()
@@ -1086,18 +1302,17 @@ class RangesPanel(QWidget):
         style = self.style_box.itemData(idx)
         if layer is None or style == layer.style:
             return
-        self.window.book.begin([])
-        live = self.window.book.ranges.get(layer.name)
+        self.book().begin([])
+        live = self.book().ranges.get(layer.name)
         live.style = style
         if style != "area":
-            # it's simply there now: wherever it was, at any time, it is all day
             for m in live.maps.values():
                 where = set()
                 for cells in m.values():
                     where |= {sq for sq, lv in cells.items() if lv}
-                for b in BLOCKS:
-                    m[b] = {sq: 3 for sq in where}
-        self.window.book.done("ranges")
+                for p in self.scheme().ids:
+                    m[p] = {sq: 3 for sq in where}
+        self.book().done("ranges")
 
     def sync_style_box(self):
         layer = self._selected_layer() if self.list.currentItem() is not None else None
@@ -1106,15 +1321,18 @@ class RangesPanel(QWidget):
             self.style_box.setCurrentIndex(self.style_box.findData(layer.style))
 
     def current_layer_changed(self, cur, prev):
-        if cur is not None:
-            self.sync_style_box()
+        if cur is not None and cur.data(Qt.UserRole):
             self.st.layer = cur.data(Qt.UserRole)
+            self.sync_style_box()
+            self.fill_options()
             self.update_notes()
             self.window.grid.viewport().update()
             self.window.update_paint_bar()
 
     def solo_toggle(self, it):
         name = it.data(Qt.UserRole)
+        if not name:
+            return
         self.st.solo = None if self.st.solo == name else name
         self.update_notes()
         self.window.grid.viewport().update()
@@ -1126,20 +1344,10 @@ class RangesPanel(QWidget):
         self.update_notes()
         self.window.update_paint_bar()
 
-    def level_clicked(self, lv):
-        if lv == BRUSH_OFF:
-            self.paint_btn.setChecked(False)
-        else:
-            self.st.level = lv
-            if not self.st.painting:
-                self.paint_btn.setChecked(True)
-        self.update_notes()
-        self.window.update_paint_bar()
-
     def layer_menu(self, pos):
         it = self.list.itemAt(pos)
         menu = QMenu(self)
-        if it is not None:
+        if it is not None and it.data(Qt.UserRole):
             name = it.data(Qt.UserRole)
             menu.addAction(f"Show only {name}", lambda: self.solo_toggle(it))
             menu.addAction(f"Find “{name}” in the sheets", lambda: self.window.find_text(name))
@@ -1152,13 +1360,14 @@ class RangesPanel(QWidget):
 
     def _selected_layer(self):
         it = self.list.currentItem()
-        return self.window.book.ranges.get(it.data(Qt.UserRole)) if it is not None else None
+        name = it.data(Qt.UserRole) if it is not None else None
+        return self.book().ranges.get(name) if name else None
 
     def new_layer(self, name=None):
-        book = self.window.book
+        book = self.book()
         if name is None:
             name, ok = QInputDialog.getText(self, "New layer", "What's on the map? A creature, plant, character, "
-                                                          "hazard, quest… (a name that matches a row elsewhere links to it)")
+                                                          "path, quest… (a name that matches a row elsewhere links to it)")
             if not ok:
                 if self.st.painting and self.st.layer is None:
                     self.paint_btn.setChecked(False)
@@ -1186,20 +1395,20 @@ class RangesPanel(QWidget):
         name = name.strip()
         if not ok or not name or name == layer.name:
             return
-        if self.window.book.ranges.get(name) is not None and name.lower() != layer.name.lower():
+        if self.book().ranges.get(name) is not None and name.lower() != layer.name.lower():
             QMessageBox.information(self, "Rename layer", f"There's already a layer called {name}.")
             return
-        self.window.book.begin([])
+        self.book().begin([])
         old = layer.name
-        self.window.book.ranges.get(old).name = name
-        ends = self.window.book.meta.get("path_ends", {})
+        self.book().ranges.get(old).name = name
+        ends = self.book().meta.get("path_ends", {})
         if old in ends:
             ends[name] = ends.pop(old)
         if self.st.layer == old:
             self.st.layer = name
         if self.st.solo == old:
             self.st.solo = name
-        self.window.book.done("ranges")
+        self.book().done("ranges")
 
     def recolor_layer(self):
         layer = self._selected_layer()
@@ -1208,15 +1417,15 @@ class RangesPanel(QWidget):
         hex6 = self.window.pick_color(layer.color, f"Colour for {layer.name}")
         if hex6 is None:
             return
-        self.window.book.begin([])
-        self.window.book.ranges.get(layer.name).color = hex6
-        self.window.book.done("ranges")
+        self.book().begin([])
+        self.book().ranges.get(layer.name).color = hex6
+        self.book().done("ranges")
 
     def delete_layer(self):
         layer = self._selected_layer()
         if layer is None:
             return
-        book = self.window.book
+        book = self.book()
         here = self.window.current_ws().title
         maps = [t for t in book.meta["maps"] if book.sheet(t) is not None]
         counts = {t: len({sq for cells in layer.maps.get(t, {}).values() for sq, lv in cells.items() if lv})
@@ -1226,11 +1435,12 @@ class RangesPanel(QWidget):
             box = QMessageBox(self)
             box.setWindowTitle(layer.name)
             where = "; ".join(f"{t} ({counts[t]} square{'s' if counts[t] != 1 else ''})" for t in painted)
-            box.setText(f"{layer.name} is painted on: {where}.")
+            box.setText(f"{layer.name} is on: {where}.")
             box.setInformativeText("Ctrl+Z undoes either choice.")
-            only_here = box.addButton(f"Remove from {here}", QMessageBox.AcceptRole) if here in painted and len(painted) > 1 else None
-            everywhere = box.addButton("Delete the layer" if painted == [here] or len(painted) == 1 else
-                                       "Delete it everywhere", QMessageBox.DestructiveRole)
+            only_here = box.addButton(f"Remove from {here}", QMessageBox.AcceptRole) \
+                if here in painted and len(painted) > 1 else None
+            everywhere = box.addButton("Delete the layer" if len(painted) == 1 else "Delete it everywhere",
+                                       QMessageBox.DestructiveRole)
             box.addButton(QMessageBox.Cancel)
             box.exec()
             choice = box.clickedButton()
@@ -1243,12 +1453,12 @@ class RangesPanel(QWidget):
                 return
         book.begin([])
         book.ranges.layers = [l for l in book.ranges.layers if l.name != layer.name]
-        self.window.book.meta.get("path_ends", {}).pop(layer.name, None)
+        book.meta.get("path_ends", {}).pop(layer.name, None)
         if self.st.layer == layer.name:
             self.st.layer = None
         if self.st.solo == layer.name:
             self.st.solo = None
-        self.window.book.done("ranges")
+        book.done("ranges")
 
     def detect(self):
         w = self.window
@@ -1275,5 +1485,85 @@ class RangesPanel(QWidget):
         w.book.done("maps")
 
 
-def _esc(s):
-    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+# ---------------------------------------------------------------- settings dialog
+
+
+class LayerSettingsDialog(QDialog):
+    """Format -> Layer times and rarity."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window = window
+        book = window.book
+        self.setWindowTitle("Layer times and rarity")
+        self.resize(460, 420)
+        lay = QVBoxLayout(self)
+        t = book.meta.get("time") or {"preset": "none"}
+        lbl = QLabel("How does this world keep time?")
+        lbl.setObjectName("heading")
+        lay.addWidget(lbl)
+        self.preset = QComboBox()
+        for key, label in TimeScheme.PRESETS.items():
+            self.preset.addItem(label, key)
+        self.preset.setCurrentIndex(max(0, self.preset.findData(t.get("preset", "none"))))
+        lay.addWidget(self.preset)
+        self.custom = QWidget()
+        c = QVBoxLayout(self.custom)
+        c.setContentsMargins(0, 0, 0, 0)
+        hint = QLabel("One period per line, in order:")
+        hint.setObjectName("muted")
+        c.addWidget(hint)
+        self.periods = QPlainTextEdit("\n".join(map(str, t.get("periods", ["Morning", "Afternoon", "Evening", "Night"]))))
+        self.periods.setMaximumHeight(110)
+        c.addWidget(self.periods)
+        hint = QLabel("Groups (optional), one per line, e.g.  Day: Morning, Afternoon")
+        hint.setObjectName("muted")
+        c.addWidget(hint)
+        self.groups = QPlainTextEdit("\n".join(f"{g}: {', '.join(map(str, m))}"
+                                               for g, m in (t.get("groups") or {}).items()))
+        self.groups.setMaximumHeight(70)
+        c.addWidget(self.groups)
+        lay.addWidget(self.custom)
+        self.preset.currentIndexChanged.connect(lambda: self.custom.setVisible(self.preset.currentData() == "custom"))
+        self.custom.setVisible(self.preset.currentData() == "custom")
+
+        lbl = QLabel("Rarity")
+        lbl.setObjectName("heading")
+        lay.addWidget(lbl)
+        names = book.meta.get("rarity")
+        self.use_rarity = QCheckBox("Layers say how common they are in each square")
+        self.use_rarity.setChecked(bool(names))
+        lay.addWidget(self.use_rarity)
+        self.rarity = QLineEdit(", ".join(names or ["Common", "Uncommon", "Rare"]))
+        self.rarity.setToolTip("Up to three names, most common first")
+        lay.addWidget(self.rarity)
+        self.use_rarity.toggled.connect(self.rarity.setEnabled)
+        self.rarity.setEnabled(bool(names))
+        note = QLabel("Changing how time works keeps what it can; anything that doesn't fit becomes "
+                      "\"all the time\". Turning rarity off keeps the levels (they come back if you turn it on).")
+        note.setObjectName("faint")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        lay.addStretch()
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def result_meta(self):
+        preset = self.preset.currentData()
+        time = {"preset": preset}
+        if preset == "custom":
+            periods = [l.strip() for l in self.periods.toPlainText().splitlines() if l.strip()]
+            groups = {}
+            for line in self.groups.toPlainText().splitlines():
+                if ":" in line:
+                    g, members = line.split(":", 1)
+                    ms = [m.strip() for m in members.split(",") if m.strip() in periods]
+                    if g.strip() and ms:
+                        groups[g.strip()] = ms
+            time.update(periods=periods, groups=groups)
+        rarity = None
+        if self.use_rarity.isChecked():
+            rarity = [n.strip() for n in self.rarity.text().split(",") if n.strip()][:3] or None
+        return time, rarity
