@@ -38,7 +38,9 @@ THEMES = {
 def stylesheet(t):
     return f"""
     QWidget {{ background: {t['window']}; color: {t['text']}; font-size: 10pt; }}
-    QMainWindow::separator {{ background: {t['border']}; width: 1px; height: 1px; }}
+    QMainWindow::separator {{ background: transparent; width: 4px; height: 4px; }}
+    QMainWindow::separator:hover {{ background: {t['accent']}; }}
+    QScrollArea#panelScroll {{ border: none; border-left: 1px solid {t['border']}; }}
     QToolBar {{ background: {t['panel']}; border: none; border-bottom: 1px solid {t['border']}; spacing: 3px; padding: 3px 6px; }}
     QToolBar::separator {{ background: {t['border']}; width: 1px; margin: 4px 5px; }}
     QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 3px 6px; color: {t['text']}; }}

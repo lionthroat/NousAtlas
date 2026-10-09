@@ -904,6 +904,7 @@ class MainWindow(QMainWindow):
         self.ranges_panel = ranges.RangesPanel(self)
         from PySide6.QtWidgets import QScrollArea
         self.right = QScrollArea()
+        self.right.setObjectName("panelScroll")
         self.right.setWidgetResizable(True)
         self.right.setFrameShape(QFrame.NoFrame)
         self.right.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -941,6 +942,8 @@ class MainWindow(QMainWindow):
         self.dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
         self.dock.visibilityChanged.connect(self._dock_visibility)
+        self.dock.topLevelChanged.connect(lambda *_: QTimer.singleShot(0, self.tidy_separators))
+        self.dock.dockLocationChanged.connect(lambda *_: QTimer.singleShot(0, self.tidy_separators))
         self._panel_auto = False                    # opened by Layers; close it again when Layers goes off
 
         self.build_actions()
@@ -974,6 +977,7 @@ class MainWindow(QMainWindow):
             self.restoreState(state)
         self.fit_panel_width()
         self.sync_pane_buttons()
+        QTimer.singleShot(0, self.tidy_separators)
 
     # ------------------------------------------------------------ actions
     def act(self, text, fn, shortcut=None, checkable=False, tip=None):
@@ -1738,6 +1742,7 @@ class MainWindow(QMainWindow):
         self.right.setMinimumWidth(need)
         if self.dock.isVisible() and not self.dock.isFloating() and self.dock.width() < need + 6:
             self.resizeDocks([self.dock], [need + 20], Qt.Horizontal)
+            QTimer.singleShot(0, self.tidy_separators)
         return need
 
     def set_panel(self, show):
@@ -1769,7 +1774,22 @@ class MainWindow(QMainWindow):
         self.a_sidebar.setChecked(self.splitter.sizes()[0] > 0)
         self.layers_btn.setChecked(self.layers_showing())
 
+    def tidy_separators(self):
+        """Qt can leave a dock separator behind where the panel's edge used to
+        be (after a saved layout is restored). Hide any that isn't actually
+        beside the panel, so it can't show up or catch the mouse over the grid."""
+        try:
+            dock = self.dock.geometry()
+            docked = self.dock.isVisible() and not self.dock.isFloating()
+            for sep in self.findChildren(QWidget, "qt_qmainwindow_extended_splitter"):
+                g = sep.geometry()
+                beside = docked and (abs(g.right() + 1 - dock.left()) <= 6 or abs(g.left() - dock.right() - 1) <= 6)
+                sep.setVisible(beside)
+        except RuntimeError:
+            pass
+
     def _dock_visibility(self, *_):
+        QTimer.singleShot(0, self.tidy_separators)
         try:
             if self.isVisible():
                 self.right_panel_moved()
