@@ -10,7 +10,8 @@ with open(os.path.join(root, "VERSION")) as f:
 
 a = Analysis(
     [os.path.join(root, "nousatlas.py")],
-    datas=[(os.path.join(root, "icon.ico"), "."), (os.path.join(root, "VERSION"), ".")],
+    datas=[(os.path.join(root, "icon.ico"), "."), (os.path.join(root, "VERSION"), "."),
+           (os.path.join(root, "sample", "Gullwing-Isle.xlsx"), "sample")],
     excludes=["PySide6.QtNetwork", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtPdf",
               "tkinter"],
 )

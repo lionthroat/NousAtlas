@@ -15,7 +15,7 @@ PKG=nous-atlas
 
 # --strip drops debug symbols (libpython alone goes from 32 MB to a few)
 "$PY" -m PyInstaller --noconfirm --clean --windowed --name NousAtlas --strip \
-    --add-data "$PWD/icon.ico:." --add-data "$PWD/VERSION:." \
+    --add-data "$PWD/icon.ico:." --add-data "$PWD/VERSION:." --add-data "$PWD/sample/Gullwing-Isle.xlsx:sample"\
     --distpath dist --workpath build --specpath build \
     --exclude-module PySide6.QtNetwork --exclude-module PySide6.QtQml \
     --exclude-module PySide6.QtQuick --exclude-module PySide6.QtPdf \

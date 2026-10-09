@@ -9,9 +9,10 @@ each creature or plant lives, by time of day). Files stay ordinary .xlsx.
 import copy
 import os
 import re
+import shutil
 import sys
 
-from PySide6.QtCore import QEvent, QPointF, QSettings, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QPointF, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices,
                            QFont, QFontDatabase, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
@@ -1307,6 +1308,7 @@ class MainWindow(QMainWindow):
         fm.addAction(self.act("Make styles from repeated formatting…", self.suggest_styles))
 
         h = mb.addMenu("&Help")
+        h.addAction(self.act("Open the sample world", self.open_sample))
         h.addAction(self.act("Keyboard shortcuts", self.show_shortcuts, "F1"))
         h.addAction(self.act(f"About {APP_NAME}", self.show_about))
 
@@ -1346,6 +1348,41 @@ class MainWindow(QMainWindow):
         self.apply_theme()
 
     # ------------------------------------------------------------ files
+    SAMPLE_NAME = "Gullwing Isle (sample)"
+
+    def open_sample(self, first_run=False):
+        """Copies the sample world into Documents and opens the copy, so it can
+        be changed freely. An existing copy is kept: open it, or make a fresh one."""
+        src = resource_path(os.path.join("sample", "Gullwing-Isle.xlsx"))
+        if not os.path.exists(src):
+            QMessageBox.warning(self, APP_NAME, "The sample world is missing from this copy of Nous Atlas.")
+            return False
+        folder = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or os.path.expanduser("~")
+        dst = os.path.join(folder, self.SAMPLE_NAME + ".xlsx")
+        if os.path.exists(dst) and not first_run:
+            box = QMessageBox(self)
+            box.setWindowTitle("Sample world")
+            box.setText("You already have a copy of the sample world in Documents.")
+            mine = box.addButton("Open my copy", QMessageBox.AcceptRole)
+            fresh = box.addButton("Start a fresh copy", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is fresh:
+                n = 2
+                while os.path.exists(dst):
+                    dst = os.path.join(folder, f"{self.SAMPLE_NAME[:-1]} {n}).xlsx")
+                    n += 1
+            elif box.clickedButton() is not mine:
+                return False
+        if not os.path.exists(dst):
+            try:
+                os.makedirs(folder, exist_ok=True)
+                shutil.copyfile(src, dst)
+            except OSError as e:
+                QMessageBox.warning(self, APP_NAME, f"Couldn't copy the sample world to {folder}:\n{e}")
+                return False
+        return self.open_path(dst)
+
     def new_book(self):
         if not self.maybe_save():
             return
@@ -3207,7 +3244,7 @@ class MainWindow(QMainWindow):
             "Ctrl+Z / Ctrl+Y  undo / redo",
             "Double-click a header edge  fit the column or row",
             "Ctrl+click a link  follow it",
-            "Ranges tab · Paint on: drag over squares · Shift-drag erases",
+            "Layers (toolbar) · pick up the brush, drag over squares · Shift-drag erases · Esc puts it down",
         ]))
 
     def show_about(self):
@@ -3264,6 +3301,10 @@ def main():
         recent = w.settings.value("recent") or []
         if recent and os.path.exists(recent[0]) and "--fresh" not in sys.argv:
             w.open_path(recent[0])
+        elif not recent and not w.settings.value("sample_offered", False, bool):
+            # the very first time: something to look at instead of an empty window
+            w.settings.setValue("sample_offered", True)
+            w.open_sample(first_run=True)
     sys.exit(app.exec())
 
 

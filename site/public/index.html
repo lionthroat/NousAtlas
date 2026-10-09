@@ -189,6 +189,9 @@ code, .cmd {
 .mac-settings .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .mac-settings .mac-btn { background: #fff; border: 1px solid #ccc; border-radius: 6px; padding: 3px 12px; white-space: nowrap; }
 
+.hero { margin: 8px auto 6px; max-width: 860px; }
+.hero img { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); box-shadow: var(--shadow); }
+.hero figcaption { text-align: center; color: var(--muted); font-size: .92rem; margin-top: 8px; }
 .uses { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 14px; }
 .use { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; box-shadow: var(--shadow); }
 .use h3 { margin: 0 0 6px; font-size: 1.08rem; }
@@ -220,6 +223,12 @@ footer a { color: inherit; }
   <h1>Nous Atlas</h1>
   <p class="tagline">A free workbook for worldbuilding and notes. Lots of tabs of text, links between them, and maps you can paint layers onto. It opens and saves ordinary Excel (.xlsx) files. No subscription, ever.</p>
 </header>
+
+<figure class="hero">
+  <img src="/screenshot.png" width="1280" height="720"
+       alt="Nous Atlas showing an island map with coloured layers for the creatures that live there, and a card describing one square: a marsh where glow moths live at night.">
+  <figcaption>Gullwing Isle, the little sample world that opens the first time you start Nous Atlas.</figcaption>
+</figure>
 
 <div class="phone-note" role="note">
   <strong>You're on a phone or tablet.</strong>
@@ -393,7 +402,8 @@ footer a { color: inherit; }
 <!-- ===================== USING IT ===================== -->
 <section class="more" aria-labelledby="using">
   <h2 id="using">Using Nous Atlas</h2>
-  <p class="meta">Your sheets are listed on the left, grouped. Your file stays a normal .xlsx, so Excel and Google Sheets still open it.</p>
+  <p>The first time you start it, Nous Atlas opens <b>Gullwing Isle</b>, a tiny made-up world with a “Start Here” page of things to try. It's your own copy in your Documents folder, so poke at anything. To get a fresh one later: <span class="path">Help <span class="arrow">→</span> Open the sample world</span>.</p>
+  <p class="meta">Your sheets are listed on the left, grouped. Your file stays a normal .xlsx, so Excel and Google Sheets still open it. <a href="https://github.com/lionthroat/NousAtlas/raw/main/sample/Gullwing-Isle.xlsx">Download the sample world on its own</a>.</p>
   <div class="uses">
     <div class="use"><h3>Jump to a sheet</h3><p>Press <span class="key"><span data-mod>Ctrl</span>+P</span> and type part of its name. <span class="key">Alt+←</span> goes back.</p></div>
     <div class="use"><h3>Find anything</h3><p>Press <span class="key"><span data-mod>Ctrl</span>+F</span>. It searches every sheet at once.</p></div>

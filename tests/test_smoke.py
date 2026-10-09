@@ -53,5 +53,21 @@ assert "A5:B5" in [str(r) for r in wb2["Places"].merged_cells.ranges]
 w2 = nousatlas.MainWindow(); w2.show()
 assert w2.open_path(path)
 w2.book.dirty = False
+
+# Help > Open the sample world: copies it into "Documents" (a temp folder here) and opens the copy
+docs = os.path.join(here, "Documents")
+nousatlas.QStandardPaths.writableLocation = staticmethod(lambda *_: docs)
+assert w2.open_sample(first_run=True)
+copy = os.path.join(docs, "Gullwing Isle (sample).xlsx")
+assert os.path.exists(copy) and w2.book.path == copy
+book = w2.book
+assert list(book.meta["maps"]) == ["Island Map"]
+assert [g["name"] for g in book.meta["groups"]] == ["Welcome", "The island", "Notes"]
+assert [l.name for l in book.ranges.layers] == ["Puffins", "Glow moths", "Red fox", "Grey seal", "Silver Brook"]
+assert book.ranges.scheme.preset == "daynight"
+w2.open_sheet("Island Map")
+app.processEvents()
+card = w2.squares.card("Island Map", (5, 8))      # E8, the lighthouse
+assert card and "Gullwing Lighthouse" in str(card), card
 w2.close()
 print("OK smoke")

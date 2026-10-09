@@ -21,6 +21,7 @@ $versionFile = Join-Path $root "build\version_info.txt"
     --version-file $versionFile `
     --add-data "$(Join-Path $root 'icon.ico');." `
     --add-data "$(Join-Path $root 'VERSION');." `
+    --add-data "$(Join-Path $root 'sample\Gullwing-Isle.xlsx');sample" `
     --distpath (Join-Path $root "dist") --workpath (Join-Path $root "build") `
     --specpath (Join-Path $root "build") `
     --exclude-module PySide6.QtNetwork --exclude-module PySide6.QtQml `

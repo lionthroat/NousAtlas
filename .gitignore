@@ -7,3 +7,4 @@ __pycache__/
 installer-output/
 # your own workbook used by the tests; private, never committed
 tests/fixtures/
+.wrangler/

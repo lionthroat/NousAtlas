@@ -8,6 +8,10 @@ still open everything Atlas saves.
 
 **Download** for Windows, Mac or Linux: https://nousatlas.lionthroat.com
 
+The first launch opens **Gullwing Isle** (`sample/Gullwing-Isle.xlsx`), a small
+made-up world to try things on; Help → Open the sample world copies it into
+Documents again. `make_sample.py` regenerates it.
+
 ## What it does
 
 - **Sheets in a sidebar**, in collapsible groups you make yourself. Drag to
