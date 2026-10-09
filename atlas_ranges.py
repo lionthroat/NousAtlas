@@ -327,6 +327,8 @@ class Overlay:
         sq = map_square(info, row, col)
         if sq is None:
             return
+        if not self.window.layers_showing():
+            return
         st = self.window.range_state
         entries = []
         for layer in book.ranges.layers:
@@ -418,6 +420,9 @@ class Brush:
     def hover(self, row, col):
         pass
 
+    def stop(self):
+        self.window.stop_painting()
+
 
 # ---------------------------------------------------------------- the panel
 
@@ -449,6 +454,11 @@ class RangesPanel(QWidget):
         self.title.setObjectName("heading")
         self.title.setWordWrap(True)
         lay.addWidget(self.title)
+        about = QLabel("Anything with a footprint on the map: creatures, plants, characters, hazards, quests. "
+                       "Layers only show while this tab is open.")
+        about.setObjectName("muted")
+        about.setWordWrap(True)
+        lay.addWidget(about)
 
         self.no_map = QWidget()
         nm = QVBoxLayout(self.no_map)
@@ -567,13 +577,13 @@ class RangesPanel(QWidget):
         self.no_map.setVisible(not is_map)
         self.body.setVisible(is_map)
         if ws is None:
-            self.title.setText("Range layers")
-            self.no_map_text.setText("Open a workbook to paint ranges.")
+            self.title.setText("Layers")
+            self.no_map_text.setText("Open a workbook to paint layers.")
             self.btn_detect.hide()
             self.btn_use_sel.hide()
             return
         if not is_map:
-            self.title.setText("Range layers")
+            self.title.setText("Layers")
             maps = [t for t in book.meta["maps"] if book.sheet(t) is not None]
             text = f"“{ws.title}” isn't a map yet."
             if maps:
@@ -582,7 +592,7 @@ class RangesPanel(QWidget):
             self.btn_detect.show()
             self.btn_use_sel.show()
             return
-        self.title.setText(f"Range layers · {ws.title}")
+        self.title.setText(f"Layers · {ws.title}")
         for blk, btn in self.block_btns.items():
             btn.setChecked(blk in self.st.blocks)
             btn.setEnabled(True)
@@ -596,6 +606,7 @@ class RangesPanel(QWidget):
         self.fill_list()
         self.update_notes()
         self.update_here()
+        self.window.update_paint_bar()
 
     def fill_list(self):
         book = self.window.book
@@ -688,6 +699,7 @@ class RangesPanel(QWidget):
         if cur is not None:
             self.st.layer = cur.data(Qt.UserRole)
             self.update_notes()
+            self.window.update_paint_bar()
 
     def solo_toggle(self, it):
         name = it.data(Qt.UserRole)
@@ -700,12 +712,14 @@ class RangesPanel(QWidget):
         if on and self.st.layer is None:
             self.new_layer()
         self.update_notes()
+        self.window.update_paint_bar()
 
     def level_clicked(self, lv):
         self.st.level = lv
         if not self.st.painting:
             self.paint_btn.setChecked(True)
         self.update_notes()
+        self.window.update_paint_bar()
 
     def layer_menu(self, pos):
         it = self.list.itemAt(pos)
@@ -728,7 +742,8 @@ class RangesPanel(QWidget):
     def new_layer(self, name=None):
         book = self.window.book
         if name is None:
-            name, ok = QInputDialog.getText(self, "New range layer", "Creature or plant name:")
+            name, ok = QInputDialog.getText(self, "New layer", "What's on the map? A creature, plant, character, "
+                                                          "hazard, quest… (a name that matches a row elsewhere links to it)")
             if not ok:
                 if self.st.painting and self.st.layer is None:
                     self.paint_btn.setChecked(False)

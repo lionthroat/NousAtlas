@@ -269,7 +269,7 @@ w.remove_links(); assert gz["D5"].hyperlink is None and gz["D5"].value == "I1"
 w.undo(); assert gz["D5"].hyperlink is not None
 w.open_sheet("Fauna"); g.set_current(6, 1)
 m = QMenu(); w.grid_menu(m)
-assert any(a.text().startswith("Make a range layer for") for a in m.actions()), [a.text() for a in m.actions()]
+assert any(a.text().startswith("Make a layer for") for a in m.actions()), [a.text() for a in m.actions()]
 assert w.save()
 wb = openpyxl.load_workbook(path)
 assert wb["Gazetteer"]["D5"].hyperlink.location == "'MAP — Day One'!J5"
@@ -313,3 +313,27 @@ assert w.squares.card("Redsaint Map", (7, 6))["note"].startswith("The posts")
 assert w.save()
 wb = openpyxl.load_workbook(path)
 print("OK squares")
+
+# ---- painting has a way out; layers show only on the Layers tab; notes from the right-click menu
+mp = "Redsaint Map"
+w.open_sheet("Fauna"); w.grid.set_current(6, 1)
+name6 = w.book.sheet("Fauna").cell(6, 1).value
+w.make_layer_for(name6)
+assert w.range_state.painting and w.paint_bar.isVisibleTo(w) and w.layers_showing()
+QTest.keyClick(w.grid, Qt.Key_Escape)
+assert not w.range_state.painting and not w.paint_bar.isVisibleTo(w)
+w.ranges_panel.paint_btn.setChecked(True); assert w.range_state.painting and w.paint_bar.isVisibleTo(w)
+w.right.setCurrentIndex(0)
+assert not w.range_state.painting and not w.layers_showing()
+w.ranges_panel.paint_btn.setChecked(False)
+w._note_dialog = lambda *a: "The Tally Post: a pillar with a dish."
+info = w.book.meta["maps"][mp]
+w.open_sheet(mp); w.grid.set_current(*R.square_cell(info, (10, 4)))
+m = QMenu(); w.grid_menu(m)
+act = next(a for a in m.actions() if a.text().startswith("Note for square J4"))
+act.trigger()
+assert w.squares.card(mp, (10, 4))["note"].startswith("The Tally Post")
+w._note_dialog = lambda *a: "cell note"
+w.open_sheet("Gazetteer"); w.grid.set_current(3, 2); w.a_note.trigger()
+assert w.book.sheet("Gazetteer").cell(3, 2).comment.text == "cell note"
+print("OK paint exits")

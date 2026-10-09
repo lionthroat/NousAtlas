@@ -2,7 +2,7 @@
 mostly text across many sheets.
 
 Sheets live in a grouped sidebar, the grid scrolls by the pixel, a side
-panel shows the whole cell, and map sheets can carry range layers (where
+panel shows the whole cell, and map sheets can carry layers (where
 each creature or plant lives, by time of day). Files stay ordinary .xlsx.
 """
 
@@ -806,13 +806,25 @@ class MainWindow(QMainWindow):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
         cl.addWidget(self.find_bar)
+        self.paint_bar = QFrame()
+        self.paint_bar.setObjectName("panel")
+        pb = QHBoxLayout(self.paint_bar)
+        pb.setContentsMargins(10, 4, 8, 4)
+        self.paint_label = QLabel()
+        pb.addWidget(self.paint_label, 1)
+        done = QPushButton("Done painting")
+        done.setToolTip("Stop painting (Esc)")
+        done.clicked.connect(lambda: self.stop_painting())
+        pb.addWidget(done)
+        self.paint_bar.hide()
+        cl.addWidget(self.paint_bar)
         cl.addWidget(self.grid, 1)
 
         self.ranges_panel = ranges.RangesPanel(self)
         self.right = QTabWidget()
         self.right.addTab(self.inspector, "Cell")
-        self.right.addTab(self.ranges_panel, "Ranges")
-        self.right.currentChanged.connect(lambda i: self.ranges_panel.refresh() if i == 1 else None)
+        self.right.addTab(self.ranges_panel, "Layers")
+        self.right.currentChanged.connect(self.right_tab_changed)
 
         self.splitter = QSplitter()
         self.splitter.addWidget(self.sidebar)
@@ -882,7 +894,7 @@ class MainWindow(QMainWindow):
         self.a_wrap = self.act("Wrap text", self.toggle_wrap, None, True)
         self.a_merge = self.act("Merge and center", self.toggle_merge, None, True)
         self.a_clear_fmt = self.act("Clear formatting", self.clear_formatting)
-        self.a_note = self.act("Edit note", lambda: (self.right.setCurrentIndex(0), self.inspector.note.setFocus()), "Shift+F2")
+        self.a_note = self.act("Edit note…", self.edit_cell_note, "Shift+F2")
         self.halign = {}
         for k in ("left", "center", "right"):
             self.halign[k] = self.act(f"Align {k}", lambda _=False, k=k: self.set_halign(k), None, True)
@@ -1432,6 +1444,8 @@ class MainWindow(QMainWindow):
             del self.history[:-100]
             self.future.clear()
         same = self.ws_title == title
+        if not same:
+            self.stop_painting(quiet=True)
         self.ws_title = title
         if same and cur is not None:
             self.grid.set_current(*cur)
@@ -1444,6 +1458,96 @@ class MainWindow(QMainWindow):
             self.find_bar.update_marks()
         self.ranges_panel.refresh()
         self.update_enabled()
+
+    # ------------------------------------------------------------ notes
+    def _note_dialog(self, title, label, text):
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.resize(460, 280)
+        lay = QVBoxLayout(dlg)
+        lbl = QLabel(label)
+        lbl.setObjectName("muted")
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+        edit = QPlainTextEdit(text)
+        lay.addWidget(edit, 1)
+        box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+        edit.setFocus()
+        return edit.toPlainText().strip() if dlg.exec() else None
+
+    def edit_cell_note(self):
+        ws = self.current_ws()
+        if ws is None or self.read_only_sheet(ws):
+            return
+        r, c = self.grid.cur
+        cell = ws._cells.get((r, c))
+        old = cell.comment.text if cell is not None and cell.comment else ""
+        new = self._note_dialog(f"Note · {fx.num_to_col(c)}{r}",
+                                "A note on this cell. Cells with a note get a small corner mark; the note shows in "
+                                "the Cell panel. (Excel keeps these too.)", old)
+        if new is None or new == old.strip():
+            return
+        self.book.begin([ws])
+        cell = ws.cell(r, c)
+        cell.comment = Comment(new, "") if new else None
+        if cell.comment is not None:
+            cell.comment.width, cell.comment.height = 300, 150
+        self.book.done()
+
+    def edit_square_note(self, map_title, sq):
+        label = ranges.square_label(sq)
+        old = self.book.meta.get("square_notes", {}).get(map_title, {}).get(label, "")
+        new = self._note_dialog(f"Square {label} · {map_title}",
+                                f"What's at {label}? Shows on the square's hover card and in the Cell panel. "
+                                "Kept by Atlas (Excel has nowhere to put it).", old)
+        if new is None or new == old:
+            return
+        self.book.begin([])
+        notes = self.book.meta.setdefault("square_notes", {}).setdefault(map_title, {})
+        if new:
+            notes[label] = new
+        else:
+            notes.pop(label, None)
+        self.book.done("notes")
+
+    # ------------------------------------------------------------ painting
+    def layers_showing(self):
+        return self.right.currentIndex() == 1
+
+    def right_tab_changed(self, i):
+        if i == 1:
+            self.ranges_panel.refresh()
+        else:
+            self.stop_painting(quiet=True)
+        self.grid.viewport().update()
+
+    def stop_painting(self, quiet=False):
+        st = self.range_state
+        if not st.painting:
+            return
+        st.painting = False
+        self.ranges_panel.paint_btn.blockSignals(True)
+        self.ranges_panel.paint_btn.setChecked(False)
+        self.ranges_panel.paint_btn.blockSignals(False)
+        self.ranges_panel.update_notes()
+        self.update_paint_bar()
+        if not quiet:
+            self.statusBar().showMessage("Stopped painting. Ctrl+Z undoes strokes one at a time.", 5000)
+
+    def update_paint_bar(self):
+        st = self.range_state
+        ws = self.current_ws()
+        on = bool(st.painting and st.layer and ws is not None and self.book is not None
+                  and ws.title in self.book.meta["maps"] and self.layers_showing())
+        if on:
+            what = "Erasing" if st.level == 0 else f"Painting {ranges.LEVELS[st.level]}"
+            self.paint_label.setText(f"<b>{what} · {st.layer}</b> · {ranges.times_label(st.blocks)}. "
+                                     "Click or drag squares; Shift-drag erases; Ctrl+Z undoes a stroke; Esc stops.")
+        self.paint_bar.setVisible(on)
 
     # ------------------------------------------------------------ square cards
     def on_hover(self, row, col, gpos):
@@ -2337,6 +2441,11 @@ class MainWindow(QMainWindow):
                 menu.addAction(f"Unfreeze panes (frozen at {ws.freeze_panes})", lambda: self.set_freeze(None))
             if (r, c) != (1, 1):
                 menu.addAction(f"Freeze above and left of {fx.num_to_col(c)}{r}", lambda: self.set_freeze("here"))
+        info = self.book.meta["maps"].get(ws.title) if ws is not None else None
+        sq = ranges.map_square(info, *self.grid.cur) if info else None
+        if sq and not ro:
+            menu.addSeparator()
+            menu.addAction(f"Note for square {ranges.square_label(sq)}…", lambda: self.edit_square_note(ws.title, sq))
         if not ro:
             self.add_link_actions(menu)
         cell = self.current_cell()
@@ -2347,7 +2456,7 @@ class MainWindow(QMainWindow):
             name = cell.value.strip()
             if (not ro and "\n" not in name and len(name) <= 60 and self.book.ranges.get(name) is None
                     and ws.title not in self.book.meta["maps"] and self.map_titles()):
-                menu.addAction(f"Make a range layer for “{name}”", lambda: self.make_layer_for(name))
+                menu.addAction(f"Make a layer for “{name}”", lambda: self.make_layer_for(name))
 
     # ------------------------------------------------------------ ranges
     def find_text(self, text):
@@ -2382,6 +2491,7 @@ class MainWindow(QMainWindow):
         self.show_range(layer.name, map_title)
         self.range_state.painting = True
         self.ranges_panel.refresh()
+        self.update_paint_bar()
 
     # ------------------------------------------------------------ help
     def show_shortcuts(self):
@@ -2428,6 +2538,7 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("Nous")
     app.setWindowIcon(app_icon())
+    app.setStyle("Fusion")
     if sys.platform == "win32":
         app.setFont(QFont("Segoe UI", 10))
     w = MainWindow()

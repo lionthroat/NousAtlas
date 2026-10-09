@@ -999,6 +999,9 @@ class SheetView(QAbstractScrollArea):
         if k == Qt.Key_F2:
             self.start_edit()
             return
+        if k == Qt.Key_Escape and self.tool is not None and self.tool.active():
+            self.tool.stop()
+            return
         if k in (Qt.Key_Delete, Qt.Key_Backspace) and not ctrl:
             if k == Qt.Key_Backspace:
                 self.start_edit("")

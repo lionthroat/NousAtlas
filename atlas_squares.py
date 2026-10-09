@@ -142,5 +142,6 @@ def card_html(cd, theme, map_title, with_note=True):
         out.append(f"<div style='color:{t['faint']}; margin-top:6px'>Note</div>")
         out.append(f"<div style='color:{t['text']}'>{esc(cd['note']).replace(chr(10), '<br>')}</div>")
     if not (cd["places"] or cd["life"] or cd["note"]):
-        out.append(f"<div style='color:{t['faint']}; margin-top:4px'>Nothing linked, painted or noted here yet.</div>")
+        out.append(f"<div style='color:{t['faint']}; margin-top:4px'>Nothing here yet. Name it with a note "
+                   f"(right-click the square), link a Gazetteer row's coordinates to it, or paint a layer.</div>")
     return "".join(out)
