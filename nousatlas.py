@@ -1278,7 +1278,7 @@ class MainWindow(QMainWindow):
         ins.addSeparator()
         ins.addAction(self.a_layer_here)
         dl = mb.addMenu("&Delete")
-        dl.addAction(self.act("Rows", self.delete_rows, "Ctrl+-"))
+        dl.addAction(self.act("Rows", self.delete_rows))
         dl.actions()[-1].setShortcutContext(Qt.WidgetShortcut)
         dl.addAction(self.act("Columns", self.delete_cols))
         dl.addAction(self.act("Sheet…", lambda: self.delete_sheet(self.current_ws())))
