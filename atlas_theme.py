@@ -94,8 +94,9 @@ def stylesheet(t):
     QFrame#workbox QPushButton {{ background: {t['panel2']}; }}
     QLabel#boxTitle {{ color: {t['accent']}; font-weight: bold; background: transparent; }}
     QLabel#subhead {{ color: {t['group']}; font-weight: bold; background: transparent; padding-top: 4px; }}
-    QPushButton#bigToggle {{ padding: 7px; font-weight: bold; }}
-    QPushButton#bigToggle:checked {{ background: {t['accent']}; color: {t['accent_text']}; }}
+    QToolButton#toolBtn {{ background: {t['panel2']}; border: 1px solid {t['border']}; border-radius: 6px; padding: 4px; }}
+    QToolButton#toolBtn:hover {{ border-color: {t['accent']}; }}
+    QToolButton#toolBtn:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}
     QCheckBox {{ background: transparent; spacing: 6px; }}
     QCheckBox::indicator {{ width: 13px; height: 13px; border: 1px solid {t['faint']}; border-radius: 3px; background: {t['canvas']}; }}
     QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}

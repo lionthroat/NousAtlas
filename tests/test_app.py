@@ -284,7 +284,7 @@ w.remove_links(); assert gz["D5"].hyperlink is None and gz["D5"].value == "I1"
 w.undo(); assert gz["D5"].hyperlink is not None
 w.open_sheet("Fauna"); g.set_current(6, 1)
 m = QMenu(); w.grid_menu(m)
-assert any(a.text().startswith("Make a layer for") for a in m.actions()), [a.text() for a in m.actions()]
+assert any(a.text().startswith("Make a map layer for") for a in m.actions()), [a.text() for a in m.actions()]
 assert w.save()
 wb = openpyxl.load_workbook(path)
 assert wb["Gazetteer"]["D5"].hyperlink.location == "'MAP — Day One'!J5"
@@ -528,7 +528,7 @@ st.layer = "South track"; w.ranges_panel.update_notes()
 rp = w.ranges_panel
 rp.fill_options()
 assert not rp.for_box.isVisibleTo(rp) and not rp.as_box.isVisibleTo(rp)     # no time or rarity for a path
-assert rp.work_title.toolTip() == "Put squares in South track" and rp.add_btn.text() == "Add"
+assert rp.work_title.toolTip() == "Put squares in South track" and not rp.paint_btn.text()
 # a very long layer name can't push the panel wider than it opens
 w.book.begin([]); w.book.ranges.add("A Creature With A Really Very Extraordinarily Long Name Indeed"); w.book.done("ranges")
 st.layer = "A Creature With A Really Very Extraordinarily Long Name Indeed"; rp.refresh(); w.fit_panel_width()
@@ -633,3 +633,28 @@ rp.set_view("day"); q = _Q(); w.grid.overlay.paint(q, w.book.sheet(mp), r1, c1, 
 assert night_hex not in q.brushes and day_hex not in q.brushes
 rp.set_view("split")
 print("OK day/night")
+
+
+# ---- one brush, one eraser; picking one up applies it to a selection; maps listed in sidebar order
+rp = w.ranges_panel
+w.open_sheet(mp); w.show_layers_tab(); w.stop_painting(quiet=True)
+w.book.begin([]); w.book.ranges.add("Brush test"); w.book.done("ranges")
+w.range_state.layer = "Brush test"; rp.refresh(); rp.set_blocks(set(R.BLOCKS))
+w.grid.select_range(*R.square_cell(info, (2, 12)), *R.square_cell(info, (4, 13)))
+rp.paint_btn.click()
+bt = w.book.ranges.get("Brush test")
+assert w.range_state.painting and not w.range_state.erasing and bt.present(mp, (3, 13)), "brush fills the selection"
+w.grid.select_range(*R.square_cell(info, (2, 12)), *R.square_cell(info, (2, 13)))
+rp.erase_btn.click()
+bt = w.book.ranges.get("Brush test")
+assert w.range_state.erasing and not rp.paint_btn.isChecked() and not bt.present(mp, (2, 12)) and bt.present(mp, (3, 12))
+QTest.keyClick(w.grid, Qt.Key_Escape)
+assert not w.range_state.painting and not rp.erase_btn.isChecked()
+titles = [ws.title for ws in w.sidebar_order() if ws.title in w.book.meta["maps"]]
+assert w.map_titles() == titles
+seen = {}
+QInputDialog.getItem = staticmethod(lambda parent, title, label, items, cur, *a, **k: (seen.update(items=items, cur=cur), (items[cur], True))[1])
+w.open_sheet("Redsaint Map"); w.open_sheet("Fauna"); w.grid.set_current(7, 1)
+w.make_layer_for("Order test")
+assert seen["items"] == titles and seen["items"][seen["cur"]] == "Redsaint Map", seen
+print("OK tools")

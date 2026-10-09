@@ -1658,6 +1658,8 @@ class MainWindow(QMainWindow):
             self.grid.set_sheet(self.book, self.book.sheet(title), cur)
         self.sidebar.select_sheet(title)
         self.grid.ring_selection = title in self.book.meta["maps"]
+        if self.grid.ring_selection:
+            self.book.meta["last_map"] = title
         self.card.hide()
         if self.find_bar.isVisible():
             self.find_bar.update_marks()
@@ -1924,10 +1926,12 @@ class MainWindow(QMainWindow):
         if not st.painting:
             return
         st.painting = False
+        st.erasing = False
         try:
-            self.ranges_panel.paint_btn.blockSignals(True)
-            self.ranges_panel.paint_btn.setChecked(False)
-            self.ranges_panel.paint_btn.blockSignals(False)
+            for btn in (self.ranges_panel.paint_btn, self.ranges_panel.erase_btn):
+                btn.blockSignals(True)
+                btn.setChecked(False)
+                btn.blockSignals(False)
             self.ranges_panel.update_notes()
         except RuntimeError:            # the window is closing
             return
@@ -1948,8 +1952,12 @@ class MainWindow(QMainWindow):
             if ranges.rarity_of(self.book) and not self.ranges_panel.timeless_selected():
                 bits.append(ranges.level_name(self.book, st.level or 3).lower())
             extra = f" ({', '.join(bits)})" if bits else ""
-            self.paint_label.setText(f"<b>Painting {st.layer}</b>{extra}. Drag over squares; Shift-drag removes; "
-                                     "Ctrl+Z undoes a stroke; Esc stops.")
+            if st.erasing:
+                self.paint_label.setText(f"<b>Eraser · {st.layer}</b>. Drag over squares to take them out; "
+                                         "Ctrl+Z undoes a stroke; Esc puts it down.")
+            else:
+                self.paint_label.setText(f"<b>Brush · {st.layer}</b>{extra}. Drag over squares to add them; "
+                                         "Shift-drag removes; Ctrl+Z undoes a stroke; Esc puts it down.")
         self.paint_bar.setVisible(on)
 
     # ------------------------------------------------------------ square cards
@@ -2783,7 +2791,8 @@ class MainWindow(QMainWindow):
     SQUARE_RE = re.compile(r"\s*([A-Za-z]{1,2})(\d{1,3})(?![\d])")
 
     def map_titles(self):
-        return [t for t in self.book.meta["maps"] if self.book.sheet(t) is not None]
+        """Map sheets in the order the sidebar shows them."""
+        return [ws.title for ws in self.sidebar_order() if ws.title in self.book.meta["maps"]]
 
     def square_of(self, value):
         """'I1' -> (9, 1); also takes the leading square of 'H10 + block'."""
@@ -2950,13 +2959,17 @@ class MainWindow(QMainWindow):
             menu.addAction(f"Find “{text}” everywhere", lambda: self.find_text(text))
             name = cell.value.strip()
             existing = self.book.ranges.get(name)
+            icon = map_icon(self.theme["accent"])
             if existing is not None and ws.title not in self.book.meta["maps"] and self.map_titles():
                 painted = [t for t in self.map_titles() if existing.has_map(t)]
                 target = painted[0] if painted else self.map_titles()[0]
-                menu.addAction(f"Go to the {existing.name} layer", lambda: self.show_range(existing.name, target))
+                menu.addSeparator()
+                menu.addAction(icon, f"Go to the {existing.name} layer on the map",
+                               lambda: self.show_range(existing.name, target))
             elif (not ro and "\n" not in name and len(name) <= 60
                     and ws.title not in self.book.meta["maps"] and self.map_titles()):
-                menu.addAction(f"Make a layer for “{name}”", lambda: self.make_layer_for(name))
+                menu.addSeparator()
+                menu.addAction(icon, f"Make a map layer for “{name}”…", lambda: self.make_layer_for(name))
 
     # ------------------------------------------------------------ ranges
     def find_text(self, text):
@@ -2973,14 +2986,16 @@ class MainWindow(QMainWindow):
         self.grid.viewport().update()
 
     def make_layer_for(self, name):
-        maps = [t for t in self.book.meta["maps"] if self.book.sheet(t) is not None]
+        maps = self.map_titles()
         if not maps:
-            QMessageBox.information(self, "Range layer", "This workbook has no map sheets yet. Open a map sheet, "
-                                    "then use the Ranges tab to mark its grid.")
+            QMessageBox.information(self, "New layer", "This workbook has no map sheets yet. Open a map sheet, "
+                                    "then use the Layers section to mark its grid.")
             return
-        map_title = maps[0]
+        last = self.book.meta.get("last_map")
+        start = maps.index(last) if last in maps else 0
+        map_title = maps[start]
         if len(maps) > 1:
-            map_title, ok = QInputDialog.getItem(self, "New layer", f"Paint {name} on which map?", maps, 0, False)
+            map_title, ok = QInputDialog.getItem(self, "New layer", f"Paint {name} on which map?", maps, start, False)
             if not ok:
                 return                      # cancelled: nothing made, nowhere to go
         self.book.begin([])

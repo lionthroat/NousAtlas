@@ -20,7 +20,7 @@ that sheet on save.
 import colorsys
 import re
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygon, QPolygonF
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QComboBox,
                                QDialog, QDialogButtonBox, QFrame, QHBoxLayout,
@@ -525,7 +525,8 @@ class ViewState:
         self.blocks = None           # the times Add/brush paints (None = all of them)
         self.view = "split"          # "split", "all", or a frozenset of periods
         self.level = 3
-        self.painting = False        # paint by dragging
+        self.painting = False        # a tool is picked up (drag on the map)
+        self.erasing = False         # ... and it's the eraser
         self.layer = None            # the selected layer
         self.solo = None
         self.all_areas = False       # False: other layers' areas fade (paths/markers always show)
@@ -765,7 +766,7 @@ class Brush:
         if self.stroke is not None:
             self.window.book.done("ranges")
         self.window.book.begin([])
-        erase = bool(e.modifiers() & Qt.ShiftModifier) or self.window.range_state.level == 0
+        erase = bool(e.modifiers() & Qt.ShiftModifier) or self.window.range_state.erasing
         self.stroke = {"done": set(), "erase": erase}
         self._apply(row, col)
         return True
@@ -787,6 +788,33 @@ class Brush:
 
 
 # ---------------------------------------------------------------- the panel
+
+
+def tool_icon(kind, fill_hex, line_hex, size=26):
+    """Brush (its tip in the layer's colour) or eraser, drawn in code."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.scale(size / 26, size / 26)
+    line = qcolor(line_hex)
+    if kind == "brush":
+        p.setPen(QPen(line, 2.2, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(20.5, 4.5), QPointF(12.5, 12.5))           # handle
+        p.setPen(QPen(line, 1.4))
+        p.setBrush(qcolor(fill_hex))
+        p.drawPolygon(QPolygonF([QPointF(12.0, 11.0), QPointF(15.0, 14.0),        # bristles
+                                 QPointF(9.5, 21.5), QPointF(4.0, 22.0), QPointF(4.5, 16.5)]))
+    else:
+        p.translate(13, 13)
+        p.rotate(-40)
+        p.setPen(QPen(line, 1.4))
+        p.setBrush(qcolor("BF616A"))
+        p.drawRoundedRect(QRectF(-9, -5, 9, 10), 2, 2)
+        p.setBrush(qcolor("ECEFF4"))
+        p.drawRoundedRect(QRectF(0, -5, 9, 10), 2, 2)
+    p.end()
+    return QIcon(pm)
 
 
 def swatch(hex6, size=14):
@@ -886,27 +914,29 @@ class RangesPanel(QWidget):
             o.addWidget(w_)
         o.addStretch()
         wk.addWidget(self.opts)
-        # way 1: paint by dragging
-        self.paint_btn = QPushButton("Paint on the map")
-        self.paint_btn.setObjectName("bigToggle")
-        self.paint_btn.setCheckable(True)
-        self.paint_btn.setToolTip("While this is on, drag over squares to add them (Shift-drag removes). Esc stops.")
-        self.paint_btn.toggled.connect(self.paint_toggled)
-        wk.addWidget(self.paint_btn)
-        # way 2: select, then add / remove
+        # the tools: a brush that adds, an eraser that removes
         row = QHBoxLayout()
-        lbl = QLabel("or select squares, then")
-        lbl.setObjectName("muted")
-        row.addWidget(lbl)
-        self.add_btn = QPushButton("Add")
-        self.add_btn.setToolTip("Put the squares selected on the map into this layer (Ctrl+L)")
-        self.add_btn.clicked.connect(lambda: self.window.add_selection_to_layer(remove=False))
-        self.remove_btn = QPushButton("Remove")
-        self.remove_btn.setToolTip("Take the selected squares out of this layer (Ctrl+Shift+L)")
-        self.remove_btn.clicked.connect(lambda: self.window.add_selection_to_layer(remove=True))
-        row.addWidget(self.add_btn)
-        row.addWidget(self.remove_btn)
-        row.addStretch()
+        row.setSpacing(6)
+        self.paint_btn = QToolButton()
+        self.paint_btn.setObjectName("toolBtn")
+        self.paint_btn.setCheckable(True)
+        self.paint_btn.setIconSize(QSize(26, 26))
+        self.paint_btn.setToolTip("Brush: drag over squares to add them to this layer.\n"
+                                  "Squares already selected are added as soon as you pick it. Esc puts it down.")
+        self.paint_btn.toggled.connect(self.paint_toggled)
+        self.erase_btn = QToolButton()
+        self.erase_btn.setObjectName("toolBtn")
+        self.erase_btn.setCheckable(True)
+        self.erase_btn.setIconSize(QSize(26, 26))
+        self.erase_btn.setToolTip("Eraser: drag over squares to take them out of this layer.\n"
+                                  "Squares already selected are removed as soon as you pick it. Esc puts it down.")
+        self.erase_btn.toggled.connect(self.erase_toggled)
+        row.addWidget(self.paint_btn)
+        row.addWidget(self.erase_btn)
+        self.tool_hint = QLabel()
+        self.tool_hint.setObjectName("muted")
+        self.tool_hint.setWordWrap(True)
+        row.addWidget(self.tool_hint, 1)
         wk.addLayout(row)
         b.addWidget(self.work)
 
@@ -1020,9 +1050,11 @@ class RangesPanel(QWidget):
         self.all_box.blockSignals(True)
         self.all_box.setChecked(self.st.all_areas)
         self.all_box.blockSignals(False)
-        self.paint_btn.blockSignals(True)
-        self.paint_btn.setChecked(self.st.painting)
-        self.paint_btn.blockSignals(False)
+        for btn, on in ((self.paint_btn, self.st.painting and not self.st.erasing),
+                        (self.erase_btn, self.st.painting and self.st.erasing)):
+            btn.blockSignals(True)
+            btn.setChecked(on)
+            btn.blockSignals(False)
         self.fill_list()
         self.fill_options()
         self.update_notes()
@@ -1135,9 +1167,14 @@ class RangesPanel(QWidget):
         has = bool(self.book() is not None and self.book().ranges.layers)
         self.empty_note.setVisible(not has)
         layer = self.book().ranges.get(st.layer) if (has and st.layer) else None
-        self.add_btn.setEnabled(layer is not None)
-        self.remove_btn.setEnabled(layer is not None)
         self.paint_btn.setEnabled(layer is not None)
+        self.erase_btn.setEnabled(layer is not None)
+        col = self.window.theme["text"].lstrip("#")
+        self.paint_btn.setIcon(tool_icon("brush", layer.color if layer else col, col))
+        self.erase_btn.setIcon(tool_icon("eraser", col, col))
+        self.tool_hint.setText("Drag on the map to erase" if (st.painting and st.erasing) else
+                               "Drag on the map to paint" if st.painting else
+                               "Pick the brush, then drag on the map")
         if layer is None:
             self.work_title.setText("Pick or make a layer to put squares in")
         else:
@@ -1145,7 +1182,6 @@ class RangesPanel(QWidget):
             fm = self.work_title.fontMetrics()
             self.work_title.setText(fm.elidedText(full, Qt.ElideRight, 250))
             self.work_title.setToolTip(full)
-        self.paint_btn.setText("Painting: drag over squares (Esc stops)" if st.painting else "Paint on the map")
         self.solo_note.setText(f"Only {st.solo} is showing · show all")
         self.solo_note.setVisible(bool(st.solo))
 
@@ -1365,9 +1401,26 @@ class RangesPanel(QWidget):
         self.window.grid.viewport().update()
 
     def paint_toggled(self, on):
+        self._tool(on, erasing=False)
+
+    def erase_toggled(self, on):
+        self._tool(on, erasing=True)
+
+    def _tool(self, on, erasing):
+        """Pick up (or put down) the brush or the eraser. Picking one up with
+        several squares selected applies it to them straight away."""
+        other = self.paint_btn if erasing else self.erase_btn
+        if on:
+            other.blockSignals(True)
+            other.setChecked(False)
+            other.blockSignals(False)
+            if self.st.layer is None and self.new_layer() is None:
+                (self.erase_btn if erasing else self.paint_btn).setChecked(False)
+                return
         self.st.painting = on
-        if on and self.st.layer is None:
-            self.new_layer()
+        self.st.erasing = erasing and on
+        if on and len(self.window.selected_squares()) > 1:
+            self.window.add_selection_to_layer(remove=erasing)
         self.update_notes()
         self.window.update_paint_bar()
 
