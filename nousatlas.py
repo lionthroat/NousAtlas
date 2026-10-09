@@ -895,6 +895,9 @@ class MainWindow(QMainWindow):
         self.a_merge = self.act("Merge and center", self.toggle_merge, None, True)
         self.a_clear_fmt = self.act("Clear formatting", self.clear_formatting)
         self.a_note = self.act("Edit note…", self.edit_cell_note, "Shift+F2")
+        self.a_layer_here = self.act("New layer on the selected squares", self.new_layer_here, "Ctrl+L",
+                                     tip="On a map: put the selected squares in a layer (new or existing). "
+                                         "On another sheet: make a layer for the selected name. (Ctrl+L)")
         self.halign = {}
         for k in ("left", "center", "right"):
             self.halign[k] = self.act(f"Align {k}", lambda _=False, k=k: self.set_halign(k), None, True)
@@ -987,6 +990,18 @@ class MainWindow(QMainWindow):
         spacer.setStyleSheet("background: transparent;")
         spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding, spacer.sizePolicy().verticalPolicy())
         tb.addWidget(spacer)
+        self.layers_btn = QToolButton()
+        self.layers_btn.setText("Layers")
+        self.layers_btn.setCheckable(True)
+        self.layers_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.layers_btn.setPopupMode(QToolButton.MenuButtonPopup)
+        self.layers_btn.setToolTip("Show layers on maps (the Layers tab). The arrow has New layer (Ctrl+L).")
+        self.layers_btn.clicked.connect(lambda on: self.right.setCurrentIndex(1 if on else 0))
+        lm = QMenu(self)
+        lm.addAction(self.a_layer_here)
+        lm.addAction("Done painting", lambda: self.stop_painting())
+        self.layers_btn.setMenu(lm)
+        tb.addWidget(self.layers_btn)
         self.row_mode_btn = QToolButton()
         self.row_mode_btn.setCheckable(True)
         self.row_mode_btn.setText("Compact rows")
@@ -1072,6 +1087,8 @@ class MainWindow(QMainWindow):
         ins.addSeparator()
         ins.addAction(self.act("Sheet", self.new_sheet, "Shift+F11"))
         ins.addAction(self.act("Group", self.new_group))
+        ins.addSeparator()
+        ins.addAction(self.a_layer_here)
         dl = mb.addMenu("&Delete")
         dl.addAction(self.act("Rows", self.delete_rows, "Ctrl+-"))
         dl.actions()[-1].setShortcutContext(Qt.WidgetShortcut)
@@ -1519,11 +1536,61 @@ class MainWindow(QMainWindow):
         return self.right.currentIndex() == 1
 
     def right_tab_changed(self, i):
+        self.layers_btn.setChecked(i == 1)
         if i == 1:
             self.ranges_panel.refresh()
         else:
             self.stop_painting(quiet=True)
         self.grid.viewport().update()
+
+    def new_layer_here(self):
+        """Ctrl+L. On a map: put the selected squares in a layer. Elsewhere:
+        make a layer for the selected name."""
+        ws = self.current_ws()
+        if ws is None or self.book is None:
+            return
+        info = self.book.meta["maps"].get(ws.title)
+        if not info:
+            cell = self.current_cell()
+            name = cell.value.strip() if cell is not None and isinstance(cell.value, str) else ""
+            if name and "\n" not in name and len(name) <= 60 and not fx.is_formula(name):
+                existing = self.book.ranges.get(name)
+                if existing is not None:
+                    maps = self.map_titles()
+                    if maps:
+                        self.show_range(existing.name, maps[0])
+                    return
+                self.make_layer_for(name)
+            else:
+                self.statusBar().showMessage("Ctrl+L: select squares on a map, or a name (e.g. on Fauna) "
+                                             "to make a layer for it.", 6000)
+            return
+        r1, c1, r2, c2 = self.grid.selection()
+        squares_sel = sorted({sq for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)
+                              for sq in [ranges.map_square(info, r, c)] if sq})
+        if not squares_sel:
+            self.statusBar().showMessage("Ctrl+L: select one or more squares on the map first.", 6000)
+            return
+        names = [l.name for l in self.book.ranges.layers]
+        where = ranges.square_label(squares_sel[0]) + (f" and {len(squares_sel) - 1} more" if len(squares_sel) > 1 else "")
+        st = self.range_state
+        name, ok = QInputDialog.getItem(
+            self, "Layer on these squares",
+            f"Put {where} in a layer ({ranges.times_label(st.blocks).lower()}, "
+            f"{ranges.LEVELS.get(st.level or 3)}).\nType a new name or pick an existing layer:",
+            names, -1 if not names else 0, True)
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        self.book.begin([])
+        layer = self.book.ranges.get(name) or self.book.ranges.add(name)
+        self.book.ranges.paint(layer, ws.title, st.blocks, squares_sel, st.level or 3)
+        self.book.done("ranges")
+        st.layer = layer.name
+        self.right.setCurrentIndex(1)
+        self.ranges_panel.refresh()
+        self.statusBar().showMessage(f"{len(squares_sel)} square{'s' if len(squares_sel) != 1 else ''} in {layer.name}. "
+                                     "Ctrl+Z undoes it; turn on Paint on the Layers tab to keep going.", 6000)
 
     def stop_painting(self, quiet=False):
         st = self.range_state

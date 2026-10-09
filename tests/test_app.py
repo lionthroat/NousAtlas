@@ -337,3 +337,17 @@ w._note_dialog = lambda *a: "cell note"
 w.open_sheet("Gazetteer"); w.grid.set_current(3, 2); w.a_note.trigger()
 assert w.book.sheet("Gazetteer").cell(3, 2).comment.text == "cell note"
 print("OK paint exits")
+
+# ---- Ctrl+L: layer on the selected squares; toolbar button
+QInputDialog.getItem = staticmethod(lambda parent, title, label, items, cur, editable=True, *a, **k: ("Dust devils", True))
+w.right.setCurrentIndex(0)
+w.open_sheet(mp)
+ra, ca = R.square_cell(info, (2, 2)); rb, cb = R.square_cell(info, (3, 3))
+w.grid.select_range(ra, ca, rb, cb)
+QTest.keyClick(w, Qt.Key_L, Qt.ControlModifier)
+dd = w.book.ranges.get("Dust devils")
+assert dd is not None and dd.level(mp, 12, (3, 3)) == 3 and dd.level(mp, 12, (2, 2)) == 3
+assert w.layers_showing() and w.layers_btn.isChecked()
+w.layers_btn.click(); assert not w.layers_showing()
+w.undo(); assert w.book.ranges.get("Dust devils") is None
+print("OK ctrl+l")
