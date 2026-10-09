@@ -146,6 +146,8 @@ class Ranges:
         return layer
 
     def paint(self, layer, map_title, blocks, squares, level):
+        if layer.style != "area":
+            blocks, level = BLOCKS, (3 if level else 0)     # paths and markers are just there
         m = layer.maps.setdefault(map_title, {})
         for b in blocks:
             cells = m.setdefault(b, {})
@@ -320,6 +322,39 @@ class ViewState:
         self.all_areas = False       # False: only the selected layer's area draws (paths/markers always do)
 
 
+def path_end(book, layer, map_title, sq, toward, info):
+    """How a path ends in a square with one neighbour: 'run' (straight on to
+    the far edge) or 'end' (stops in the square). Ends on the edge of the map
+    run off it unless set otherwise."""
+    label = square_label(sq)
+    mode = book.meta.get("path_ends", {}).get(layer.name, {}).get(map_title, {}).get(label)
+    if mode:
+        return mode
+    dx, dy = toward
+    nx, ny = sq[0] - dx, sq[1] - dy
+    off_map = not (1 <= nx <= info["cols"] and 1 <= ny <= info["rows"])
+    return "run" if off_map else "end"
+
+
+def path_ends_here(book, map_title, sq):
+    """[(layer, toward)] for each visible path that ends in this square."""
+    out = []
+    for layer in book.ranges.layers:
+        if layer.style != "path" or not layer.level(map_title, 0, sq):
+            continue
+        dirs = []
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if (dx or dy) and layer.level(map_title, 0, (sq[0] + dx, sq[1] + dy)):
+                    if dx and dy and (layer.level(map_title, 0, (sq[0] + dx, sq[1]))
+                                      or layer.level(map_title, 0, (sq[0], sq[1] + dy))):
+                        continue
+                    dirs.append((dx, dy))
+        if len(dirs) == 1:
+            out.append((layer, dirs[0]))
+    return out
+
+
 class Overlay:
     """Paints visible layers onto map squares (called by the grid).
     Area layers fill (side by side when several share a square), paths draw
@@ -327,6 +362,23 @@ class Overlay:
 
     def __init__(self, window):
         self.window = window
+
+    def line_through(self, ws, row, col):
+        """True when a path or marker is drawn on this square (labels get a backing)."""
+        book = self.window.book
+        if book is None or book.ranges is None or not self.window.layers_showing():
+            return False
+        info = book.meta["maps"].get(ws.title)
+        sq = map_square(info, row, col) if info else None
+        if sq is None:
+            return False
+        st = self.window.range_state
+        for layer in book.ranges.layers:
+            if layer.style == "area" or (st.solo and layer.name != st.solo) or (not st.solo and not layer.visible):
+                continue
+            if any(self._view(layer, ws.title, sq)):
+                return True
+        return False
 
     def _view(self, layer, map_title, sq):
         """(day level, night level) in split view, else (level, level)."""
@@ -389,14 +441,13 @@ class Overlay:
         size = min(inner.width(), inner.height())
         for layer, d, n in lines:
             # a line from the centre toward every neighbour on the same path
-            ends = []
+            ends, dirs = [], []
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
                     if (dx, dy) == (0, 0):
                         continue
                     nb = (sq[0] + dx, sq[1] + dy)
-                    nd, nn = self._view(layer, ws.title, nb)
-                    if not (nd or nn):
+                    if not any(self._view(layer, ws.title, nb)):
                         continue
                     if dx and dy:
                         # skip a diagonal when the two squares beside it already join them
@@ -404,19 +455,23 @@ class Overlay:
                         b = self._view(layer, ws.title, (sq[0], sq[1] + dy))
                         if any(a) or any(b):
                             continue
-                    ends.append(QPointF(c.x() + dx * inner.width() / 2, c.y() + dy * inner.height() / 2))
-            level = max(d, n)
-            width = max(3.0, size * (0.26 if level == 3 else 0.2 if level == 2 else 0.14))
-            dashed = st.split and (not d or not n)
-            for pen_color, extra in ((QColor(20, 20, 26, 150), 3.0), (qcolor(layer.color, 255 if level == 3 else ALPHA[level] + 30), 0.0)):
-                pen = QPen(pen_color, width + extra, Qt.DashLine if dashed and not extra else Qt.SolidLine,
-                           Qt.RoundCap, Qt.RoundJoin)
-                p.setPen(pen)
-                if ends:
-                    for e in ends:
-                        p.drawLine(c, e)
-                else:
-                    p.drawPoint(c)
+                    dirs.append((dx, dy))
+            if len(dirs) == 1 and path_end(book, layer, ws.title, sq, dirs[0], info) == "run":
+                dx, dy = dirs[0]
+                dirs.append((-dx, -dy))         # carry on straight through to the far edge
+            for dx, dy in dirs:
+                ends.append(QPointF(c.x() + dx * inner.width() / 2, c.y() + dy * inner.height() / 2))
+            width = max(3.0, size * 0.17)
+            for pen_color, extra in ((QColor(20, 20, 26, 110), 2.0), (qcolor(layer.color), 0.0)):
+                w2 = width + extra
+                p.setPen(QPen(pen_color, w2, Qt.SolidLine, Qt.FlatCap, Qt.RoundJoin))
+                for e in ends:
+                    p.drawLine(c, e)
+                # a round joint (or a rounded stop) at the centre
+                p.setPen(Qt.NoPen)
+                p.setBrush(pen_color)
+                p.drawEllipse(c, w2 / 2, w2 / 2)
+                p.setBrush(Qt.NoBrush)
         for i, (layer, d, n) in enumerate(marks):
             level = max(d, n)
             r = size * 0.2
@@ -632,6 +687,12 @@ class RangesPanel(QWidget):
         self.level_group.idClicked.connect(self.level_clicked)
         row.addStretch()
         b.addLayout(row)
+        self.timeless_note = QLabel("Paths and markers are simply there: time and abundance don't apply. "
+                                    "Right-click where a path ends to choose whether it stops there or runs on "
+                                    "to the edge.")
+        self.timeless_note.setObjectName("muted")
+        self.timeless_note.setWordWrap(True)
+        b.addWidget(self.timeless_note)
         self.paint_note = QLabel()
         self.paint_note.setObjectName("muted")
         self.paint_note.setWordWrap(True)
@@ -739,12 +800,23 @@ class RangesPanel(QWidget):
         self.list.blockSignals(False)
         self.sync_style_box()
 
+    def timeless_selected(self):
+        layer = self.window.book.ranges.get(self.st.layer) if (self.window.book and self.st.layer) else None
+        return layer is not None and layer.style != "area"
+
     def update_notes(self):
         st = self.st
+        timeless = self.timeless_selected()
+        for btn in list(self.block_btns.values()) + [self.level_group.button(i) for i in (3, 2, 1)]:
+            btn.setEnabled(not timeless)
+        self.timeless_note.setVisible(timeless)
         self.solo_note.setText(f"Showing only {st.solo}. Double-click it again to show all."
                                if st.solo else "Double-click a layer to show only that one.")
         if st.layer is None:
             self.paint_note.setText("Make a layer first.")
+        elif st.painting and timeless:
+            what = "Erasing" if st.level == 0 else "Painting"
+            self.paint_note.setText(f"{what} {st.layer}. Click or drag over squares; Shift-drag erases.")
         elif st.painting:
             what = "Erasing" if st.level == 0 else f"Painting {LEVELS[st.level]}"
             self.paint_note.setText(f"{what} {st.layer} at {times_label(st.blocks)}. "
@@ -796,8 +868,13 @@ class RangesPanel(QWidget):
                 it.setFlags(Qt.ItemIsEnabled)
                 it.setToolTip(f"{layer.name} at {block_label(b)}: {LEVELS.get(lv, 'not here')}. Click to change.")
                 tbl.setItem(i, 1 + j, it)
+            if layer.style != "area":
+                for j in range(6):
+                    it = tbl.item(i, 1 + j)
+                    it.setText("")
+                    it.setToolTip(f"{layer.name} is a {layer.style}: it's simply here. Click to remove it.")
             top = max(levels.values())
-            all_it = QTableWidgetItem("all")
+            all_it = QTableWidgetItem("all" if layer.style == "area" else "on")
             all_it.setTextAlignment(Qt.AlignCenter)
             all_it.setForeground(QColor(t["muted"]))
             all_it.setFlags(Qt.ItemIsEnabled)
@@ -837,7 +914,10 @@ class RangesPanel(QWidget):
         if layer is None:
             return
         nxt = {3: 2, 2: 1, 1: 0, 0: 3}
-        if col == 7:
+        if layer.style != "area":
+            on = any(layer.level(map_title, b, sq) for b in BLOCKS)
+            blocks, level = set(BLOCKS), 0 if on else 3
+        elif col == 7:
             top = max(layer.level(map_title, b, sq) for b in BLOCKS)
             blocks, level = set(BLOCKS), nxt[top] if top else 3
         else:
@@ -898,7 +978,16 @@ class RangesPanel(QWidget):
         if layer is None or style == layer.style:
             return
         self.window.book.begin([])
-        self.window.book.ranges.get(layer.name).style = style
+        live = self.window.book.ranges.get(layer.name)
+        live.style = style
+        if style != "area":
+            # it's simply there now: wherever it was, at any time, it is all day
+            for m in live.maps.values():
+                where = set()
+                for cells in m.values():
+                    where |= {sq for sq, lv in cells.items() if lv}
+                for b in BLOCKS:
+                    m[b] = {sq: 3 for sq in where}
         self.window.book.done("ranges")
 
     def sync_style_box(self):
@@ -991,6 +1080,9 @@ class RangesPanel(QWidget):
         self.window.book.begin([])
         old = layer.name
         self.window.book.ranges.get(old).name = name
+        ends = self.window.book.meta.get("path_ends", {})
+        if old in ends:
+            ends[name] = ends.pop(old)
         if self.st.layer == old:
             self.st.layer = name
         if self.st.solo == old:
@@ -1018,6 +1110,7 @@ class RangesPanel(QWidget):
             return
         self.window.book.begin([])
         self.window.book.ranges.layers = [l for l in self.window.book.ranges.layers if l.name != layer.name]
+        self.window.book.meta.get("path_ends", {}).pop(layer.name, None)
         if self.st.layer == layer.name:
             self.st.layer = None
         if self.st.solo == layer.name:

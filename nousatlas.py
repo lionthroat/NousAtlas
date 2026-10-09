@@ -1715,6 +1715,12 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
         self.set_panel(True)
 
+    def set_path_end(self, map_title, sq, layer_name, mode):
+        self.book.begin([])
+        ends = self.book.meta.setdefault("path_ends", {}).setdefault(layer_name, {}).setdefault(map_title, {})
+        ends[ranges.square_label(sq)] = mode
+        self.book.done("ranges")
+
     def show_layers_tab(self):
         """Open the Layers tab, sliding the side panel open if it's shut."""
         if not self.panel_open():
@@ -1814,7 +1820,11 @@ class MainWindow(QMainWindow):
         ws = self.current_ws()
         on = bool(st.painting and st.layer and ws is not None and self.book is not None
                   and ws.title in self.book.meta["maps"] and self.layers_showing())
-        if on:
+        if on and self.ranges_panel.timeless_selected():
+            what = "Erasing" if st.level == 0 else "Painting"
+            self.paint_label.setText(f"<b>{what} · {st.layer}</b> (a path or marker: no times). "
+                                     "Click or drag squares; Shift-drag erases; Ctrl+Z undoes a stroke; Esc stops.")
+        elif on:
             what = "Erasing" if st.level == 0 else f"Painting {ranges.LEVELS[st.level]}"
             self.paint_label.setText(f"<b>{what} · {st.layer}</b> · {ranges.times_label(st.blocks)}. "
                                      "Click or drag squares; Shift-drag erases; Ctrl+Z undoes a stroke; Esc stops.")
@@ -2785,6 +2795,12 @@ class MainWindow(QMainWindow):
         if sq and not ro:
             menu.addSeparator()
             menu.addAction(f"Note for square {ranges.square_label(sq)}…", lambda: self.edit_square_note(ws.title, sq))
+            for layer, toward in ranges.path_ends_here(self.book, ws.title, sq):
+                mode = ranges.path_end(self.book, layer, ws.title, sq, toward, info)
+                other = "end" if mode == "run" else "run"
+                label = (f"{layer.name}: stop in this square" if other == "end"
+                         else f"{layer.name}: run on to the edge")
+                menu.addAction(label, lambda l=layer.name, o=other: self.set_path_end(ws.title, sq, l, o))
         if not ro:
             self.add_link_actions(menu)
         cell = self.current_cell()

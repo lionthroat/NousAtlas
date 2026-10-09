@@ -496,3 +496,28 @@ w.sidebar_btn.click(); assert w.splitter.sizes()[0] > 0
 w.dock.setFloating(True); app.processEvents(); assert w.panel_open()
 w.redock_panel(); assert not w.dock.isFloating() and w.panel_open()
 print("OK layers panel")
+
+# ---- paths are timeless; path ends stop or run on; labels get a backing
+st = w.range_state; st.solo = None
+w.open_sheet(mp); w.show_layers_tab()
+trk = w.book.ranges.get("South track"); assert trk.style == "path"
+w.book.begin([]); w.book.ranges.paint(trk, mp, {16}, [(9, 6)], 1); w.book.done("ranges")
+trk = w.book.ranges.get("South track")
+assert all(trk.level(mp, b, (9, 6)) == 3 for b in R.BLOCKS)          # painted as simply there
+st.layer = "South track"; w.ranges_panel.update_notes()
+assert not w.ranges_panel.block_btns[0].isEnabled() and w.ranges_panel.timeless_note.isVisibleTo(w.ranges_panel)
+# the end at I15 (bottom edge) runs off the map; the top end at I6 stops
+ends = dict((l.name, d) for l, d in R.path_ends_here(w.book, mp, (9, 15)))
+assert "South track" in ends and R.path_end(w.book, trk, mp, (9, 15), ends["South track"], info) == "run"
+top = dict((l.name, d) for l, d in R.path_ends_here(w.book, mp, (9, 6)))
+assert R.path_end(w.book, trk, mp, (9, 6), top["South track"], info) == "end"
+w.grid.set_current(*R.square_cell(info, (9, 6)))
+m = QMenu(); w.grid_menu(m)
+run_on = next(a for a in m.actions() if a.text() == "South track: run on to the edge")
+run_on.trigger()
+assert R.path_end(w.book, w.book.ranges.get("South track"), mp, (9, 6), top["South track"], info) == "run"
+assert w.grid.overlay.line_through(w.book.sheet(mp), *R.square_cell(info, (9, 8)))
+cd = w.squares.card(mp, (9, 10))
+assert "South track</a> <span style='color:#7b88a1'>· path</span>" in SQ.card_html(cd, w.theme, mp) or "· path<" in SQ.card_html(cd, w.theme, mp)
+w.grab().save(os.path.join(shot_dir, "path2.png"))
+print("OK timeless paths")

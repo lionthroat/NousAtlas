@@ -199,7 +199,7 @@ def card_html(cd, theme, map_title, with_note=True):
             when = R.times_label(blocks)
             what = f"{R.LEVELS[level]} · {when.lower() if when in ('Day', 'Night', 'All day') else when}"
             if layer.style != "area":
-                what = f"{layer.style} · " + what
+                what = layer.style
             kind = f"{esc(home[0])}: " if home else ""
             name = (f"<a style='color:#{layer.color}; text-decoration:none' href='{href(*home)}'>{esc(layer.name)}</a>"
                     if home else f"<span style='color:#{layer.color}'>{esc(layer.name)}</span>")

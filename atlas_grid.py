@@ -715,6 +715,15 @@ class SheetView(QAbstractScrollArea):
         if isinstance(shown, fx.XlError):
             color = QColor(self.theme["danger"])
         flags = int(hflag) | int(vflag) | wrap
+        if self.overlay is not None and getattr(self.overlay, "line_through", None) \
+                and self.overlay.line_through(self.ws, r, c):
+            # a path runs under this label: give the text a backing in the square's own colour
+            box = st.fm.boundingRect(inner, flags, text).adjusted(-3, -1, 3, 1)
+            back = qcolor(st.fill, 235) if st.fill else QColor(self.theme["canvas"])
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setPen(Qt.NoPen)
+            p.setBrush(back)
+            p.drawRoundedRect(box, 3, 3)
         if link_target(cell):
             # a link is a button: click it to go there
             pill = self.link_rect(r, c)
