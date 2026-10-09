@@ -1736,6 +1736,8 @@ class MainWindow(QMainWindow):
                    self.ranges_panel.minimumSizeHint().width(),
                    self.inspector.minimumSizeHint().width()) + 30      # + a scrollbar
         self.right.setMinimumWidth(need)
+        if self.dock.isVisible() and not self.dock.isFloating() and self.dock.width() < need + 6:
+            self.resizeDocks([self.dock], [need + 20], Qt.Horizontal)
         return need
 
     def set_panel(self, show):
@@ -1802,6 +1804,7 @@ class MainWindow(QMainWindow):
         self.set_layers_on(True)
         self.ranges_panel.refresh()
         self.fit_panel_width()
+        QTimer.singleShot(0, self.fit_panel_width)
         QTimer.singleShot(0, lambda: self.right.ensureWidgetVisible(self.layers_section.header))
 
     def hide_layers(self):

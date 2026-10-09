@@ -841,8 +841,6 @@ class RangesPanel(QWidget):
 
         # the layers
         self.list = QListWidget()
-        self.list.setMinimumHeight(90)
-        self.list.setMaximumHeight(170)
         self.list.setToolTip("Anything with a footprint on the map: creatures, plants, characters, paths, quests.\n"
                              "Select one to work on it. Tick to show; double-click to show only that one.")
         self.list.itemChanged.connect(self.item_changed)
@@ -863,19 +861,16 @@ class RangesPanel(QWidget):
             row.addWidget(btn)
         b.addLayout(row)
 
-        # the main action: put the selected squares in (or out of) the layer
-        row = QHBoxLayout()
-        self.add_btn = QPushButton("Add selected squares")
-        self.add_btn.setObjectName("primary")
-        self.add_btn.setToolTip("Put the squares selected on the map into this layer (Ctrl+L)")
-        self.add_btn.clicked.connect(lambda: self.window.add_selection_to_layer(remove=False))
-        self.remove_btn = QPushButton("Remove")
-        self.remove_btn.setToolTip("Take the selected squares out of this layer (Ctrl+Shift+L)")
-        self.remove_btn.clicked.connect(lambda: self.window.add_selection_to_layer(remove=True))
-        row.addWidget(self.add_btn, 1)
-        row.addWidget(self.remove_btn)
-        b.addLayout(row)
-        # options for Add: when, and how common (each only if the workbook uses them)
+        # ---- the work box: put squares in the selected layer
+        self.work = QFrame()
+        self.work.setObjectName("workbox")
+        wk = QVBoxLayout(self.work)
+        wk.setContentsMargins(10, 8, 10, 10)
+        wk.setSpacing(7)
+        self.work_title = QLabel()
+        self.work_title.setObjectName("boxTitle")
+        wk.addWidget(self.work_title)
+        # options: when, and how common (each only if the workbook uses them)
         self.opts = QWidget()
         o = QHBoxLayout(self.opts)
         o.setContentsMargins(0, 0, 0, 0)
@@ -890,9 +885,35 @@ class RangesPanel(QWidget):
         for w_ in (self.for_label, self.for_box, self.as_label, self.as_box):
             o.addWidget(w_)
         o.addStretch()
-        b.addWidget(self.opts)
+        wk.addWidget(self.opts)
+        # way 1: paint by dragging
+        self.paint_btn = QPushButton("Paint on the map")
+        self.paint_btn.setObjectName("bigToggle")
+        self.paint_btn.setCheckable(True)
+        self.paint_btn.setToolTip("While this is on, drag over squares to add them (Shift-drag removes). Esc stops.")
+        self.paint_btn.toggled.connect(self.paint_toggled)
+        wk.addWidget(self.paint_btn)
+        # way 2: select, then add / remove
+        row = QHBoxLayout()
+        lbl = QLabel("or select squares, then")
+        lbl.setObjectName("muted")
+        row.addWidget(lbl)
+        self.add_btn = QPushButton("Add")
+        self.add_btn.setToolTip("Put the squares selected on the map into this layer (Ctrl+L)")
+        self.add_btn.clicked.connect(lambda: self.window.add_selection_to_layer(remove=False))
+        self.remove_btn = QPushButton("Remove")
+        self.remove_btn.setToolTip("Take the selected squares out of this layer (Ctrl+Shift+L)")
+        self.remove_btn.clicked.connect(lambda: self.window.add_selection_to_layer(remove=True))
+        row.addWidget(self.add_btn)
+        row.addWidget(self.remove_btn)
+        row.addStretch()
+        wk.addLayout(row)
+        b.addWidget(self.work)
 
-        # what the map shows (only if the world keeps time)
+        # ---- view
+        lbl = QLabel("View")
+        lbl.setObjectName("subhead")
+        b.addWidget(lbl)
         self.view_row = QWidget()
         v = QHBoxLayout(self.view_row)
         v.setContentsMargins(0, 0, 0, 0)
@@ -903,15 +924,14 @@ class RangesPanel(QWidget):
         self.view_box.activated.connect(self.view_chosen)
         v.addWidget(self.view_box, 1)
         b.addWidget(self.view_row)
-
         row = QHBoxLayout()
         lbl = QLabel("Draw as")
         lbl.setObjectName("faint")
         row.addWidget(lbl)
         self.style_box = QComboBox()
         for key in STYLES:
-            self.style_box.addItem({"area": "Area (fills squares)", "path": "Path (a line: roads, tracks, rivers)",
-                                    "marker": "Marker (a dot: one-off things)"}[key], key)
+            self.style_box.addItem({"area": "Area (fills squares)", "path": "Path (roads, tracks, rivers)",
+                                    "marker": "Marker (one-off things)"}[key], key)
         self.style_box.activated.connect(self.style_chosen)
         row.addWidget(self.style_box, 1)
         b.addLayout(row)
@@ -920,10 +940,6 @@ class RangesPanel(QWidget):
                                 "Paths and markers always show.")
         self.all_box.toggled.connect(self.all_toggled)
         b.addWidget(self.all_box)
-        self.paint_btn = QCheckBox("Paint by dragging on the map")
-        self.paint_btn.setToolTip("Drag over squares to add them (Shift-drag removes). Esc stops.")
-        self.paint_btn.toggled.connect(self.paint_toggled)
-        b.addWidget(self.paint_btn)
         self.solo_note = QPushButton()
         self.solo_note.setFlat(True)
         self.solo_note.setStyleSheet("text-align: left;")
@@ -1109,6 +1125,9 @@ class RangesPanel(QWidget):
         if current is not None:
             self.list.setCurrentItem(current)
         self.list.blockSignals(False)
+        rows = max(2, self.list.count())
+        self.list.setFixedHeight(min(170, rows * self.list.sizeHintForRow(0 if self.list.count() else -1) + 8)
+                                 if self.list.count() else 60)
         self.sync_style_box()
 
     def update_notes(self):
@@ -1118,7 +1137,15 @@ class RangesPanel(QWidget):
         layer = self.book().ranges.get(st.layer) if (has and st.layer) else None
         self.add_btn.setEnabled(layer is not None)
         self.remove_btn.setEnabled(layer is not None)
-        self.add_btn.setText(f"Add selected squares to {layer.name}" if layer else "Add selected squares")
+        self.paint_btn.setEnabled(layer is not None)
+        if layer is None:
+            self.work_title.setText("Pick or make a layer to put squares in")
+        else:
+            full = f"Put squares in {layer.name}"
+            fm = self.work_title.fontMetrics()
+            self.work_title.setText(fm.elidedText(full, Qt.ElideRight, 250))
+            self.work_title.setToolTip(full)
+        self.paint_btn.setText("Painting: drag over squares (Esc stops)" if st.painting else "Paint on the map")
         self.solo_note.setText(f"Only {st.solo} is showing · show all")
         self.solo_note.setVisible(bool(st.solo))
 

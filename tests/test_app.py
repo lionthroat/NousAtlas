@@ -528,7 +528,13 @@ st.layer = "South track"; w.ranges_panel.update_notes()
 rp = w.ranges_panel
 rp.fill_options()
 assert not rp.for_box.isVisibleTo(rp) and not rp.as_box.isVisibleTo(rp)     # no time or rarity for a path
-assert rp.add_btn.text() == "Add selected squares to South track"
+assert rp.work_title.toolTip() == "Put squares in South track" and rp.add_btn.text() == "Add"
+# a very long layer name can't push the panel wider than it opens
+w.book.begin([]); w.book.ranges.add("A Creature With A Really Very Extraordinarily Long Name Indeed"); w.book.done("ranges")
+st.layer = "A Creature With A Really Very Extraordinarily Long Name Indeed"; rp.refresh(); w.fit_panel_width()
+assert w.right.minimumWidth() < 480, w.right.minimumWidth()
+assert w.right.width() >= w.right.minimumWidth() - 2
+st.layer = "South track"; rp.refresh()
 # one removing stroke (Shift-drag with the brush), one undo
 rp.paint_btn.setChecked(True); assert w.range_state.painting
 r8, c8 = R.square_cell(info, (9, 8))

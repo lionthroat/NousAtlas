@@ -86,6 +86,14 @@ def stylesheet(t):
     QToolButton#sectionHeader {{ background: {t['panel']}; color: {t['group']}; font-weight: bold; text-align: left;
         border: none; border-bottom: 1px solid {t['border']}; border-radius: 0; padding: 6px 8px; }}
     QToolButton#sectionHeader:hover {{ background: {t['panel2']}; }}
+    QFrame#workbox {{ background: {t['panel']}; border: 1px solid {t['accent']}; border-radius: 6px; }}
+    QFrame#workbox QWidget {{ background: transparent; }}
+    QFrame#workbox QComboBox {{ background: {t['panel2']}; }}
+    QFrame#workbox QPushButton {{ background: {t['panel2']}; }}
+    QLabel#boxTitle {{ color: {t['accent']}; font-weight: bold; background: transparent; }}
+    QLabel#subhead {{ color: {t['group']}; font-weight: bold; background: transparent; padding-top: 4px; }}
+    QPushButton#bigToggle {{ padding: 7px; font-weight: bold; }}
+    QPushButton#bigToggle:checked {{ background: {t['accent']}; color: {t['accent_text']}; }}
     QCheckBox {{ background: transparent; spacing: 6px; }}
     QCheckBox::indicator {{ width: 13px; height: 13px; border: 1px solid {t['faint']}; border-radius: 3px; background: {t['canvas']}; }}
     QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}
