@@ -386,6 +386,11 @@ class Book:
         return self._swap(self.redo_stack, self.undo_stack)
 
     def _swap(self, src, dst):
+        # skip steps that wouldn't change anything (only Atlas's own settings,
+        # identical to now): one Ctrl+Z should always visibly undo something
+        while src and not src[-1].sheets and src[-1].meta == self.meta and \
+                _same_ranges(src[-1].ranges, self.ranges):
+            src.pop()
         if not src:
             return False
         snap = src.pop()
@@ -670,6 +675,16 @@ class Book:
                 if bc in mapping:
                     ns.fill = PatternFill("solid", fgColor="FF" + mapping[bc])
         return n
+
+
+def _same_ranges(a, b):
+    if a is None or b is None:
+        return a is b
+    def key(r):
+        return [(l.name, l.color, l.style, l.visible,
+                 {m: {bl: dict(c) for bl, c in blocks.items() if c} for m, blocks in l.maps.items()})
+                for l in r.layers]
+    return key(a) == key(b)
 
 
 def _looks_numeric(s):

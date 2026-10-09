@@ -505,7 +505,21 @@ w.book.begin([]); w.book.ranges.paint(trk, mp, {16}, [(9, 6)], 1); w.book.done("
 trk = w.book.ranges.get("South track")
 assert all(trk.level(mp, b, (9, 6)) == 3 for b in R.BLOCKS)          # painted as simply there
 st.layer = "South track"; w.ranges_panel.update_notes()
-assert not w.ranges_panel.block_btns[0].isEnabled() and w.ranges_panel.timeless_note.isVisibleTo(w.ranges_panel)
+rp = w.ranges_panel
+assert not rp.time_box.isVisibleTo(rp)                                   # no Time for a path
+assert rp.level_group.button(3).text() == "Draw" and not rp.level_group.button(2).isVisibleTo(rp)
+rp.level_group.button(0).click(); assert w.range_state.painting and w.range_state.level == 0     # Erase
+rp.level_group.button(3).click(); assert w.range_state.painting and w.range_state.level == 3     # back to Draw
+rp.level_group.button(R.BRUSH_OFF).click(); assert not w.range_state.painting                             # Off
+# one erase stroke, one undo
+rp.level_group.button(0).click()
+r8, c8 = R.square_cell(info, (9, 8))
+QTest.mouseClick(w.grid.viewport(), Qt.LeftButton, Qt.NoModifier, w.grid.cell_rect(r8, c8).center())
+assert not w.book.ranges.get("South track").level(mp, 0, (9, 8))
+w.book.begin([]); w.book.done("ranges")          # an empty step sneaks in: Ctrl+Z skips it
+w.a_undo.trigger()
+assert w.book.ranges.get("South track").level(mp, 0, (9, 8)) == 3
+rp.level_group.button(R.BRUSH_OFF).click()
 # the end at I15 (bottom edge) runs off the map; the top end at I6 stops
 ends = dict((l.name, d) for l, d in R.path_ends_here(w.book, mp, (9, 15)))
 assert "South track" in ends and R.path_end(w.book, trk, mp, (9, 15), ends["South track"], info) == "run"

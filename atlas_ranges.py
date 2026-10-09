@@ -31,6 +31,7 @@ NIGHT = {20, 0, 4}           # 20:00-08:00
 LEVELS = {3: "common", 2: "uncommon", 1: "rare"}
 LEVEL_NAMES = {v: k for k, v in LEVELS.items()}
 ALPHA = {3: 215, 2: 135, 1: 70}
+BRUSH_OFF = 9                # the brush row's Off button (Qt reserves -1)
 HEADERS = ["Layer", "Map", "Times", "Abundance", "Squares", "Colour", "Style"]
 STYLES = {"area": "Area", "path": "Path", "marker": "Marker"}
 
@@ -516,6 +517,8 @@ class Brush:
         info = self.window.book.meta["maps"][self.window.current_ws().title]
         if map_square(info, row, col) is None:
             return False
+        if self.stroke is not None:
+            self.window.book.done("ranges")
         self.window.book.begin([])
         erase = bool(e.modifiers() & (Qt.ShiftModifier | Qt.AltModifier)) or self.window.range_state.level == 0
         self.stroke = {"done": set(), "erase": erase}
@@ -568,11 +571,6 @@ class RangesPanel(QWidget):
         self.title.setObjectName("heading")
         self.title.setWordWrap(True)
         lay.addWidget(self.title)
-        about = QLabel("Anything with a footprint on the map: creatures, plants, characters, hazards, quests. "
-                       "Layers only show while this tab is open.")
-        about.setObjectName("muted")
-        about.setWordWrap(True)
-        lay.addWidget(about)
 
         self.no_map = QWidget()
         nm = QVBoxLayout(self.no_map)
@@ -594,9 +592,14 @@ class RangesPanel(QWidget):
         b.setContentsMargins(0, 0, 0, 0)
         b.setSpacing(8)
 
+        # Time: only for areas (paths and markers are simply there)
+        self.time_box = QWidget()
+        tb = QVBoxLayout(self.time_box)
+        tb.setContentsMargins(0, 0, 0, 0)
+        tb.setSpacing(4)
         lbl = QLabel("Time")
         lbl.setObjectName("faint")
-        b.addWidget(lbl)
+        tb.addWidget(lbl)
         row = QHBoxLayout()
         row.setSpacing(3)
         self.block_btns = {}
@@ -609,7 +612,7 @@ class RangesPanel(QWidget):
             self.block_btns[blk] = btn
             row.addWidget(btn)
         row.addStretch()
-        b.addLayout(row)
+        tb.addLayout(row)
         row = QHBoxLayout()
         row.setSpacing(3)
         for label, blocks in (("Day", DAY), ("Night", NIGHT), ("All", set(BLOCKS))):
@@ -622,20 +625,24 @@ class RangesPanel(QWidget):
         self.split_box.toggled.connect(self.split_toggled)
         row.addWidget(self.split_box)
         row.addStretch()
-        b.addLayout(row)
+        tb.addLayout(row)
+        b.addWidget(self.time_box)
 
-        lbl = QLabel("Layers")
-        lbl.setObjectName("faint")
-        b.addWidget(lbl)
         self.list = QListWidget()
         self.list.setMinimumHeight(90)
         self.list.setMaximumHeight(170)
+        self.list.setToolTip("Anything with a footprint on the map: creatures, plants, characters, hazards, quests.\n"
+                             "Tick to show; double-click to show only that one; right-click for more.")
         self.list.itemChanged.connect(self.item_changed)
         self.list.currentItemChanged.connect(self.current_layer_changed)
         self.list.itemDoubleClicked.connect(self.solo_toggle)
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self.layer_menu)
-        b.addWidget(self.list, 1)
+        b.addWidget(self.list)
+        self.empty_note = QLabel("Nothing here yet: click New, or select squares and press Ctrl+L.")
+        self.empty_note.setObjectName("muted")
+        self.empty_note.setWordWrap(True)
+        b.addWidget(self.empty_note)
         row = QHBoxLayout()
         for label, fn in (("New", self.new_layer), ("Rename", self.rename_layer),
                           ("Colour", self.recolor_layer), ("Delete", self.delete_layer)):
@@ -659,27 +666,20 @@ class RangesPanel(QWidget):
                                 "Paths and markers always draw.")
         self.all_box.toggled.connect(self.all_toggled)
         b.addWidget(self.all_box)
-        self.solo_note = QLabel()
-        self.solo_note.setObjectName("muted")
+        self.solo_note = QPushButton()
+        self.solo_note.setFlat(True)
+        self.solo_note.setStyleSheet("text-align: left;")
+        self.solo_note.clicked.connect(lambda: self.show_all())
         b.addWidget(self.solo_note)
 
-        lbl = QLabel("Paint")
+        # Brush: one row; choosing a brush starts painting, Off stops
+        lbl = QLabel("Brush")
         lbl.setObjectName("faint")
         b.addWidget(lbl)
         row = QHBoxLayout()
         row.setSpacing(3)
-        self.paint_btn = QPushButton("Paint")
-        paint_row = row
-        self.paint_btn.setCheckable(True)
-        self.paint_btn.setToolTip("Click or drag over squares. Shift-drag (or the Erase brush) removes.")
-        self.paint_btn.toggled.connect(self.paint_toggled)
-        row.addWidget(self.paint_btn)
-        row.addStretch()
-        b.addLayout(paint_row)
-        row = QHBoxLayout()
-        row.setSpacing(3)
         self.level_group = QButtonGroup(self)
-        for lv, label in ((3, "Common"), (2, "Uncommon"), (1, "Rare"), (0, "Erase")):
+        for lv, label in ((BRUSH_OFF, "Off"), (3, "Common"), (2, "Uncommon"), (1, "Rare"), (0, "Erase")):
             btn = QPushButton(label)
             btn.setCheckable(True)
             self.level_group.addButton(btn, lv)
@@ -687,20 +687,13 @@ class RangesPanel(QWidget):
         self.level_group.idClicked.connect(self.level_clicked)
         row.addStretch()
         b.addLayout(row)
-        self.timeless_note = QLabel("Paths and markers are simply there: time and abundance don't apply. "
-                                    "Right-click where a path ends to choose whether it stops there or runs on "
-                                    "to the edge.")
-        self.timeless_note.setObjectName("muted")
-        self.timeless_note.setWordWrap(True)
-        b.addWidget(self.timeless_note)
-        self.paint_note = QLabel()
-        self.paint_note.setObjectName("muted")
-        self.paint_note.setWordWrap(True)
-        b.addWidget(self.paint_note)
+        # kept for the window's own use: painting on / off
+        self.paint_btn = QPushButton()
+        self.paint_btn.setCheckable(True)
+        self.paint_btn.toggled.connect(self.paint_toggled)
+        self.paint_btn.hide()
+        b.addWidget(self.paint_btn)
 
-        lbl = QLabel("Here")
-        lbl.setObjectName("faint")
-        b.addWidget(lbl)
         self.here_title = QLabel()
         self.here_title.setWordWrap(True)
         self.here_title.setTextFormat(Qt.RichText)
@@ -730,6 +723,7 @@ class RangesPanel(QWidget):
         b.addWidget(self.here_add)
         self.here_sq = None
         self.here_layers = []
+        b.addStretch(1)                  # spare height goes to the bottom, not between sections
         lay.addWidget(self.body, 1)
         lay.addStretch()
         self.refresh()
@@ -758,7 +752,7 @@ class RangesPanel(QWidget):
             self.btn_detect.show()
             self.btn_use_sel.show()
             return
-        self.title.setText(f"Layers · {ws.title}")
+        self.title.setText(ws.title)
         for blk, btn in self.block_btns.items():
             btn.setChecked(blk in self.st.blocks)
             btn.setEnabled(True)
@@ -768,7 +762,7 @@ class RangesPanel(QWidget):
         self.all_box.blockSignals(True)
         self.all_box.setChecked(self.st.all_areas)
         self.all_box.blockSignals(False)
-        self.level_group.button(self.st.level).setChecked(True)
+        self.sync_brush()
         self.paint_btn.blockSignals(True)
         self.paint_btn.setChecked(self.st.painting)
         self.paint_btn.blockSignals(False)
@@ -804,25 +798,32 @@ class RangesPanel(QWidget):
         layer = self.window.book.ranges.get(self.st.layer) if (self.window.book and self.st.layer) else None
         return layer is not None and layer.style != "area"
 
+    def sync_brush(self):
+        """The brush row: Off / Common / Uncommon / Rare / Erase, or Off / Draw / Erase
+        for paths and markers."""
+        st = self.st
+        timeless = self.timeless_selected()
+        if timeless and st.level in (1, 2):
+            st.level = 3
+        self.level_group.button(3).setText("Draw" if timeless else "Common")
+        for lv in (2, 1):
+            self.level_group.button(lv).setVisible(not timeless)
+        self.level_group.button(BRUSH_OFF if not st.painting else st.level).setChecked(True)
+
     def update_notes(self):
         st = self.st
         timeless = self.timeless_selected()
-        for btn in list(self.block_btns.values()) + [self.level_group.button(i) for i in (3, 2, 1)]:
-            btn.setEnabled(not timeless)
-        self.timeless_note.setVisible(timeless)
-        self.solo_note.setText(f"Showing only {st.solo}. Double-click it again to show all."
-                               if st.solo else "Double-click a layer to show only that one.")
-        if st.layer is None:
-            self.paint_note.setText("Make a layer first.")
-        elif st.painting and timeless:
-            what = "Erasing" if st.level == 0 else "Painting"
-            self.paint_note.setText(f"{what} {st.layer}. Click or drag over squares; Shift-drag erases.")
-        elif st.painting:
-            what = "Erasing" if st.level == 0 else f"Painting {LEVELS[st.level]}"
-            self.paint_note.setText(f"{what} {st.layer} at {times_label(st.blocks)}. "
-                                    "Click or drag over squares; Shift-drag erases.")
-        else:
-            self.paint_note.setText("Turn on Paint, then click or drag over squares.")
+        self.time_box.setVisible(not timeless)
+        self.sync_brush()
+        self.solo_note.setText(f"Only {st.solo} is showing · show all")
+        self.solo_note.setVisible(bool(st.solo))
+        has = bool(self.window.book is not None and self.window.book.ranges.layers)
+        self.empty_note.setVisible(not has)
+
+    def show_all(self):
+        self.st.solo = None
+        self.update_notes()
+        self.window.grid.viewport().update()
 
     def update_here(self):
         """The square editor: every layer on the selected square, by time.
@@ -839,7 +840,7 @@ class RangesPanel(QWidget):
         tbl = self.here_table
         tbl.blockSignals(True)
         if sq is None:
-            self.here_title.setText("Select a map square to see and edit what's there.")
+            self.here_title.setText("<span style='color:gray'>Select a square on the map to edit what's in it.</span>")
             tbl.setRowCount(0)
             tbl.hide()
             self.here_add.hide()
@@ -847,9 +848,9 @@ class RangesPanel(QWidget):
             tbl.blockSignals(False)
             return
         rows = w.book.ranges.who(ws.title, sq)
-        self.here_title.setText(f"<b>{square_label(sq)}</b> <span style='color:{t['muted']}'>· click a time to change it"
-                                f"</span>" if rows else
-                                f"<b>{square_label(sq)}</b> <span style='color:{t['muted']}'>· no layers here yet</span>")
+        self.here_title.setText(f"<span style='color:{t['group']}'><b>Square {square_label(sq)}</b></span>"
+                                + (f" <span style='color:{t['muted']}'>· click a slot to change it</span>" if rows else
+                                   f" <span style='color:{t['muted']}'>· nothing here yet</span>"))
         tbl.setRowCount(len(rows))
         self.here_layers = [layer.name for layer, _ in rows]
         for i, (layer, levels) in enumerate(rows):
@@ -881,7 +882,7 @@ class RangesPanel(QWidget):
             all_it.setToolTip("Set every time at once (cycles common > uncommon > rare > none)")
             tbl.setItem(i, 7, all_it)
         tbl.resizeColumnToContents(0)
-        tbl.setColumnWidth(0, min(150, max(80, tbl.columnWidth(0))))
+        tbl.setColumnWidth(0, min(120, max(80, tbl.columnWidth(0))))
         tbl.setFixedHeight(tbl.horizontalHeader().height() + sum(tbl.rowHeight(i) for i in range(len(rows))) + 4)
         tbl.setVisible(bool(rows))
         tbl.setStyleSheet(f"QTableWidget {{ gridline-color: {t['panel']}; background: {t['window']}; }}")
@@ -891,7 +892,7 @@ class RangesPanel(QWidget):
                     "&nbsp;&nbsp;&nbsp;&nbsp;</span>")
         self.here_legend.setText(f"{chip(ALPHA[3])} common &nbsp; {chip(ALPHA[2])} uncommon &nbsp; "
                                  f"{chip(ALPHA[1])} rare &nbsp; – not here")
-        self.here_legend.setVisible(bool(rows))
+        self.here_legend.setVisible(any(layer.style == "area" for layer, _ in rows))
         # add another layer to this square
         others = [l.name for l in w.book.ranges.layers if l.name not in self.here_layers]
         self.here_add.blockSignals(True)
@@ -1018,9 +1019,12 @@ class RangesPanel(QWidget):
         self.window.update_paint_bar()
 
     def level_clicked(self, lv):
-        self.st.level = lv
-        if not self.st.painting:
-            self.paint_btn.setChecked(True)
+        if lv == BRUSH_OFF:
+            self.paint_btn.setChecked(False)
+        else:
+            self.st.level = lv
+            if not self.st.painting:
+                self.paint_btn.setChecked(True)
         self.update_notes()
         self.window.update_paint_bar()
 

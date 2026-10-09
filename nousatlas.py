@@ -862,6 +862,7 @@ class MainWindow(QMainWindow):
         layers_scroll.setWidgetResizable(True)
         layers_scroll.setFrameShape(QFrame.NoFrame)
         layers_scroll.setWidget(self.ranges_panel)
+        layers_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.right.addTab(layers_scroll, "Layers")
         self.right.currentChanged.connect(self.right_tab_changed)
 
@@ -878,14 +879,14 @@ class MainWindow(QMainWindow):
 
         # Cell and Layers: a panel you can close, float and drag anywhere, or dock left or right
         from PySide6.QtWidgets import QDockWidget
-        self.dock = QDockWidget("Cell · Layers", self)
+        self.dock = QDockWidget("", self)
         self.dock.setObjectName("panel_dock")
         self.dock.setWidget(self.right)
         self.dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable |
                               QDockWidget.DockWidgetFloatable)
         self.dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
-        self.dock.visibilityChanged.connect(lambda *a: self.right_panel_moved())
+        self.dock.visibilityChanged.connect(self._dock_visibility)
         self._panel_auto = False                    # opened by Layers; close it again when Layers goes off
 
         self.build_actions()
@@ -1670,7 +1671,9 @@ class MainWindow(QMainWindow):
 
     def fit_panel_width(self):
         """The panel is never narrower than its contents need."""
-        need = max(self.ranges_panel.minimumSizeHint().width(), self.inspector.minimumSizeHint().width()) + 24
+        need = max(self.ranges_panel.body.minimumSizeHint().width(),
+                   self.ranges_panel.minimumSizeHint().width(),
+                   self.inspector.minimumSizeHint().width()) + 34      # + margins and a scrollbar
         self.right.setMinimumWidth(need)
         return need
 
@@ -1703,6 +1706,13 @@ class MainWindow(QMainWindow):
         self.a_sidebar.setChecked(self.splitter.sizes()[0] > 0)
         self.layers_btn.setChecked(self.layers_showing())
 
+    def _dock_visibility(self, *_):
+        try:
+            if self.isVisible():
+                self.right_panel_moved()
+        except RuntimeError:        # the window is being torn down
+            pass
+
     def right_panel_moved(self):
         if not self.panel_open():
             self._panel_auto = False
@@ -1727,6 +1737,7 @@ class MainWindow(QMainWindow):
             self._panel_auto = True
             self.set_panel(True)
         self.right.setCurrentIndex(1)
+        self.fit_panel_width()
         self.layers_btn.setChecked(True)
 
     def hide_layers(self):
@@ -1807,10 +1818,13 @@ class MainWindow(QMainWindow):
         if not st.painting:
             return
         st.painting = False
-        self.ranges_panel.paint_btn.blockSignals(True)
-        self.ranges_panel.paint_btn.setChecked(False)
-        self.ranges_panel.paint_btn.blockSignals(False)
-        self.ranges_panel.update_notes()
+        try:
+            self.ranges_panel.paint_btn.blockSignals(True)
+            self.ranges_panel.paint_btn.setChecked(False)
+            self.ranges_panel.paint_btn.blockSignals(False)
+            self.ranges_panel.update_notes()
+        except RuntimeError:            # the window is closing
+            return
         self.update_paint_bar()
         if not quiet:
             self.statusBar().showMessage("Stopped painting. Ctrl+Z undoes strokes one at a time.", 5000)
