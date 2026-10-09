@@ -147,6 +147,47 @@ def app_icon():
     return QIcon(path) if os.path.exists(path) else QIcon()
 
 
+# ---------------------------------------------------------------- panel sections
+
+
+class Section(QWidget):
+    """A titled part of the side panel that folds open and shut."""
+
+    toggled = Signal(bool)
+
+    def __init__(self, title, content, key, settings):
+        super().__init__()
+        self.key, self.settings = key, settings
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.header = QToolButton()
+        self.header.setText(title)
+        self.header.setCheckable(True)
+        self.header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.header.setSizePolicy(self.header.sizePolicy().horizontalPolicy().Expanding,
+                                  self.header.sizePolicy().verticalPolicy())
+        self.header.setObjectName("sectionHeader")
+        self.header.toggled.connect(self._toggled)
+        lay.addWidget(self.header)
+        self.content = content
+        lay.addWidget(content)
+        self.header.setChecked(settings.value(key, "true") == "true")
+        self._toggled(self.header.isChecked())
+
+    def _toggled(self, on):
+        self.header.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
+        self.content.setVisible(on)
+        self.settings.setValue(self.key, "true" if on else "false")
+        self.toggled.emit(on)
+
+    def expanded(self):
+        return self.header.isChecked()
+
+    def expand(self, on=True):
+        self.header.setChecked(on)
+
+
 # ---------------------------------------------------------------- font picker
 
 
@@ -470,12 +511,13 @@ class Inspector(QWidget):
         lay.addWidget(self.where)
         self.text = BigEdit(self.commit_text, self.load)
         self.text.setPlaceholderText("Empty cell. Type here, then Ctrl+Enter.")
+        self.text.setToolTip("Ctrl+Enter saves; Esc puts it back. Alt+← / Alt+→ go back and forward.")
         lay.addWidget(self.text, 3)
         self.result = QLabel()
         self.result.setWordWrap(True)
         self.result.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lay.addWidget(self.result)
-        lbl = QLabel("Note")
+        self.note_label = lbl = QLabel("Note")
         lbl.setObjectName("faint")
         lay.addWidget(lbl)
         self.note = BigEdit(self.commit_note, self.load)
@@ -515,10 +557,6 @@ class Inspector(QWidget):
         self.ranges_row.setSpacing(4)
         rb.addLayout(self.ranges_row)
         lay.addWidget(self.ranges_box)
-        hint = QLabel("Ctrl+Enter saves the cell. Alt+← / Alt+→ go back and forward.")
-        hint.setObjectName("faint")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
 
     def load(self):
         w = self.window
@@ -579,7 +617,13 @@ class Inspector(QWidget):
         if sq is None:
             self.square_box.hide()
             self.text.setMaximumHeight(16777215)
+            self.note_label.show()
+            self.note.show()
             return
+        # a map square: its own note (below) replaces the cell note, unless the cell has one
+        has_note = bool(self.note.toPlainText())
+        self.note_label.setVisible(has_note)
+        self.note.setVisible(has_note)
         cd = w.squares.card(ws.title, sq)
         self.square_card.setText(squares.card_html(cd, w.theme, ws.title, with_note=False))
         self.text.setMaximumHeight(70)          # map squares hold a short mark; make room for the card
@@ -855,16 +899,23 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.grid, 1)
 
         self.ranges_panel = ranges.RangesPanel(self)
-        self.right = QTabWidget()
-        self.right.addTab(self.inspector, "Cell")
         from PySide6.QtWidgets import QScrollArea
-        layers_scroll = QScrollArea()
-        layers_scroll.setWidgetResizable(True)
-        layers_scroll.setFrameShape(QFrame.NoFrame)
-        layers_scroll.setWidget(self.ranges_panel)
-        layers_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.right.addTab(layers_scroll, "Layers")
-        self.right.currentChanged.connect(self.right_tab_changed)
+        self.right = QScrollArea()
+        self.right.setWidgetResizable(True)
+        self.right.setFrameShape(QFrame.NoFrame)
+        self.right.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        holder = QWidget()
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(0)
+        self.cell_section = Section("Cell", self.inspector, "sec_cell", self.settings)
+        self.layers_section = Section("Layers", self.ranges_panel, "sec_layers", self.settings)
+        self.layers_section.toggled.connect(lambda on: self.ranges_panel.refresh() if on else None)
+        hl.addWidget(self.cell_section)
+        hl.addWidget(self.layers_section)
+        hl.addStretch(1)
+        self.right.setWidget(holder)
+        self.layers_on = self.settings.value("layers_on", "false") == "true"
 
         self.splitter = QSplitter()
         self.splitter.addWidget(self.sidebar)
@@ -1091,6 +1142,8 @@ class MainWindow(QMainWindow):
         self.layers_btn.setPopupMode(QToolButton.MenuButtonPopup)
         self.layers_btn.setToolTip("Show layers on maps (the Layers tab). The arrow has New layer (Ctrl+L).")
         self.layers_btn.clicked.connect(lambda on: self.show_layers_tab() if on else self.hide_layers())
+        self.layers_btn.setToolTip("Layers on or off: creatures, plants, characters, paths… on the map. "
+                                   "The arrow has New layer (Ctrl+L) and Draw as.")
         lm = QMenu(self)
         lm.addAction(self.a_layer_here)
         lm.addAction("Done painting", lambda: self.stop_painting())
@@ -1324,6 +1377,7 @@ class MainWindow(QMainWindow):
         self.update_enabled()
         self.update_style_box()
         QTimer.singleShot(600, self.font_box.prewarm)
+        self.layers_btn.setChecked(self.layers_on)
 
     def prepare_meta(self, book):
         """First time a workbook comes into Atlas: find map grids and put the
@@ -1656,14 +1710,14 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ painting
     def layers_showing(self):
-        return self.right.currentIndex() == 1 and self.panel_open()
+        return bool(self.layers_on)
 
-    def right_tab_changed(self, i):
-        self.layers_btn.setChecked(self.layers_showing())
-        if i == 1:
-            self.ranges_panel.refresh()
-        else:
+    def set_layers_on(self, on):
+        self.layers_on = bool(on)
+        self.settings.setValue("layers_on", "true" if on else "false")
+        if not on:
             self.stop_painting(quiet=True)
+        self.layers_btn.setChecked(self.layers_on)
         self.grid.viewport().update()
 
     def panel_open(self):
@@ -1673,7 +1727,7 @@ class MainWindow(QMainWindow):
         """The panel is never narrower than its contents need."""
         need = max(self.ranges_panel.body.minimumSizeHint().width(),
                    self.ranges_panel.minimumSizeHint().width(),
-                   self.inspector.minimumSizeHint().width()) + 34      # + margins and a scrollbar
+                   self.inspector.minimumSizeHint().width()) + 30      # + a scrollbar
         self.right.setMinimumWidth(need)
         return need
 
@@ -1732,20 +1786,22 @@ class MainWindow(QMainWindow):
         self.book.done("ranges")
 
     def show_layers_tab(self):
-        """Open the Layers tab, sliding the side panel open if it's shut."""
+        """Layers on: draw them, open the Layers section, and slide the panel
+        open if it's shut."""
         if not self.panel_open():
             self._panel_auto = True
             self.set_panel(True)
-        self.right.setCurrentIndex(1)
+        self.layers_section.expand(True)
+        self.set_layers_on(True)
+        self.ranges_panel.refresh()
         self.fit_panel_width()
-        self.layers_btn.setChecked(True)
+        QTimer.singleShot(0, lambda: self.right.ensureWidgetVisible(self.layers_section.header))
 
     def hide_layers(self):
-        self.right.setCurrentIndex(0)
+        self.set_layers_on(False)
         if self._panel_auto:
             self._panel_auto = False
             self.set_panel(False)
-        self.layers_btn.setChecked(False)
 
     def sync_style_menu(self):
         layer = self.book.ranges.get(self.range_state.layer) if (self.book and self.range_state.layer) else None
@@ -2119,7 +2175,7 @@ class MainWindow(QMainWindow):
         self.inspector.load()
         self.sync_toolbar()
         self.update_stats()
-        if self.right.currentIndex() == 1:
+        if self.layers_section.expanded():
             self.ranges_panel.update_here()
 
     def update_stats(self):
@@ -2802,8 +2858,7 @@ class MainWindow(QMainWindow):
             r, c = self.grid.cur
             if ws.freeze_panes:
                 menu.addAction(f"Unfreeze panes (frozen at {ws.freeze_panes})", lambda: self.set_freeze(None))
-            if (r, c) != (1, 1):
-                menu.addAction(f"Freeze above and left of {fx.num_to_col(c)}{r}", lambda: self.set_freeze("here"))
+
         info = self.book.meta["maps"].get(ws.title) if ws is not None else None
         sq = ranges.map_square(info, *self.grid.cur) if info else None
         if sq and not ro:
@@ -2823,7 +2878,12 @@ class MainWindow(QMainWindow):
             text = cell.value.strip().split("\n")[0][:40]
             menu.addAction(f"Find “{text}” everywhere", lambda: self.find_text(text))
             name = cell.value.strip()
-            if (not ro and "\n" not in name and len(name) <= 60 and self.book.ranges.get(name) is None
+            existing = self.book.ranges.get(name)
+            if existing is not None and ws.title not in self.book.meta["maps"] and self.map_titles():
+                painted = [t for t in self.map_titles() if existing.has_map(t)]
+                target = painted[0] if painted else self.map_titles()[0]
+                menu.addAction(f"Go to the {existing.name} layer", lambda: self.show_range(existing.name, target))
+            elif (not ro and "\n" not in name and len(name) <= 60
                     and ws.title not in self.book.meta["maps"] and self.map_titles()):
                 menu.addAction(f"Make a layer for “{name}”", lambda: self.make_layer_for(name))
 
@@ -2849,14 +2909,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Range layer", "This workbook has no map sheets yet. Open a map sheet, "
                                     "then use the Ranges tab to mark its grid.")
             return
+        map_title = maps[0]
+        if len(maps) > 1:
+            map_title, ok = QInputDialog.getItem(self, "New layer", f"Paint {name} on which map?", maps, 0, False)
+            if not ok:
+                return                      # cancelled: nothing made, nowhere to go
         self.book.begin([])
         layer = self.book.ranges.add(name)
         self.book.done("ranges")
-        map_title = maps[0]
-        if len(maps) > 1:
-            map_title, ok = QInputDialog.getItem(self, "Range layer", f"Paint {name} on which map first?", maps, 0, False)
-            if not ok:
-                map_title = maps[0]
         self.show_range(layer.name, map_title)
         self.range_state.painting = True
         self.ranges_panel.refresh()

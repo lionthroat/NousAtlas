@@ -114,7 +114,7 @@ book.dirty = True
 
 # paint into a screenshot to make sure drawing doesn't fail
 w.range_state.split = True; w.range_state.solo = None
-w.right.setCurrentIndex(1); app.processEvents()
+w.show_layers_tab(); app.processEvents()
 shot_dir = os.path.join(os.path.dirname(path), "shots"); os.makedirs(shot_dir, exist_ok=True)
 w.grab().save(os.path.join(shot_dir, "ranges.png"))
 
@@ -323,7 +323,7 @@ assert w.range_state.painting and w.paint_bar.isVisibleTo(w) and w.layers_showin
 QTest.keyClick(w.grid, Qt.Key_Escape)
 assert not w.range_state.painting and not w.paint_bar.isVisibleTo(w)
 w.ranges_panel.paint_btn.setChecked(True); assert w.range_state.painting and w.paint_bar.isVisibleTo(w)
-w.right.setCurrentIndex(0)
+w.hide_layers()
 assert not w.range_state.painting and not w.layers_showing()
 w.ranges_panel.paint_btn.setChecked(False)
 w._note_dialog = lambda *a: "The Tally Post: a pillar with a dish."
@@ -340,7 +340,7 @@ print("OK paint exits")
 
 # ---- Ctrl+L: layer on the selected squares; toolbar button
 QInputDialog.getItem = staticmethod(lambda parent, title, label, items, cur, editable=True, *a, **k: ("Dust devils", True))
-w.right.setCurrentIndex(0)
+w.hide_layers()
 w.open_sheet(mp)
 ra, ca = R.square_cell(info, (2, 2)); rb, cb = R.square_cell(info, (3, 3))
 w.grid.select_range(ra, ca, rb, cb)
@@ -353,7 +353,7 @@ w.undo(); assert w.book.ranges.get("Dust devils") is None
 print("OK ctrl+l")
 
 # ---- Here table: edit what's on a square, by time, without repainting
-w.open_sheet(mp); w.right.setCurrentIndex(1)
+w.open_sheet(mp); w.show_layers_tab()
 jays = w.book.ranges.get("Tally jay")
 rj, cj = R.square_cell(info, (7, 6)); w.grid.set_current(rj, cj); app.processEvents()
 p = w.ranges_panel
@@ -388,7 +388,7 @@ assert "Terrain:" in SQ.card_html(cd, w.theme, mp)
 # the south track as a path
 w.book.begin([]); track = w.book.ranges.add("South track"); track.style = "path"
 w.book.ranges.paint(track, mp, set(R.BLOCKS), [(9, y) for y in range(7, 16)], 3); w.book.done("ranges")
-w.open_sheet(mp); w.right.setCurrentIndex(1); app.processEvents()
+w.open_sheet(mp); w.show_layers_tab(); app.processEvents()
 w.grab().save(os.path.join(shot_dir, "path.png"))
 assert "path" in SQ.card_html(w.squares.card(mp, (9, 10)), w.theme, mp)
 # dropper: pick the badlands red, put it on another square
@@ -452,7 +452,7 @@ print("OK toolbar")
 
 # ---- Layers panel can't get lost; Draw-as from the button menu; only the selected area draws
 w.open_sheet(mp)
-w.right.setCurrentIndex(0)
+w.hide_layers()
 w.set_panel(False); app.processEvents()
 assert not w.panel_open() and not w.layers_showing()
 w.layers_btn.click(); app.processEvents()
@@ -535,3 +535,51 @@ cd = w.squares.card(mp, (9, 10))
 assert "South track</a> <span style='color:#7b88a1'>· path</span>" in SQ.card_html(cd, w.theme, mp) or "· path<" in SQ.card_html(cd, w.theme, mp)
 w.grab().save(os.path.join(shot_dir, "path2.png"))
 print("OK timeless paths")
+
+
+# ---- the five from the panic-quit: layers remembered, cancel makes nothing, grouped list, one panel, gentle delete
+import nousatlas as NA
+w.show_layers_tab(); assert w.settings.value("layers_on") == "true"
+w2 = NA.MainWindow(); assert w2.layers_on; w2.close()
+w.hide_layers(); assert w.settings.value("layers_on") == "false"
+# cancel when choosing the map: nothing is made, we stay put
+before = [l.name for l in w.book.ranges.layers]
+w.open_sheet("Fauna"); w.grid.set_current(6, 1)
+QInputDialog.getItem = staticmethod(lambda *a, **k: ("", False))
+w.make_layer_for("Scorpion test")
+assert [l.name for l in w.book.ranges.layers] == before and w.ws_title == "Fauna"
+QInputDialog.getItem = staticmethod(lambda parent, title, label, items, *a, **k: (items[0], True))
+# an existing layer offers "Go to", not nothing
+fname = w.book.sheet("Fauna").cell(6, 1).value
+if w.book.ranges.get(fname) is None:
+    w.book.ranges.add(fname)
+m = QMenu(); w.grid_menu(m)
+assert any(a.text().startswith(f"Go to the {w.book.ranges.get(fname).name} layer") for a in m.actions()), [a.text() for a in m.actions()]
+assert not any(a.text().startswith("Freeze above") for a in m.actions())
+# one panel: Cell and Layers both visible at once
+w.show_layers_tab(); assert w.cell_section.content.isVisibleTo(w.right) or not w.cell_section.expanded()
+assert w.layers_section.expanded() and w.ranges_panel.isVisibleTo(w.right)
+# the list puts this map's layers first and says where the others are
+w.open_sheet(mp); w.ranges_panel.refresh()
+texts = [w.ranges_panel.list.item(i).text() for i in range(w.ranges_panel.list.count())]
+assert "Not on this map" in texts or all("·" not in t for t in texts), texts
+# delete: removing from this map only keeps it elsewhere
+w.book.begin([]); two = w.book.ranges.add("Two maps"); w.book.ranges.paint(two, mp, set(R.BLOCKS), [(1, 1)], 3)
+w.book.ranges.paint(two, "MAP — Year One", set(R.BLOCKS), [(1, 1)], 3); w.book.done("ranges")
+w.range_state.layer = "Two maps"; w.ranges_panel.refresh()
+from PySide6.QtWidgets import QMessageBox as MB
+orig_exec = MB.exec
+def pick(text):
+    def run(box):
+        for b in box.buttons():
+            if b.text().startswith(text):
+                box._clicked = b
+        box.clickedButton = lambda: box._clicked
+        return 0
+    return run
+MB.exec = pick("Remove from")
+w.ranges_panel.delete_layer()
+tm = w.book.ranges.get("Two maps")
+assert tm is not None and not tm.has_map(mp) and tm.has_map("MAP — Year One")
+MB.exec = orig_exec
+print("OK panel five")

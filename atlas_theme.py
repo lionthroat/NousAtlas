@@ -83,6 +83,9 @@ def stylesheet(t):
     QLabel#faint {{ color: {t['faint']}; background: transparent; }}
     QLabel#heading {{ color: {t['group']}; font-weight: bold; background: transparent; }}
     QFrame#panel {{ background: {t['panel']}; }}
+    QToolButton#sectionHeader {{ background: {t['panel']}; color: {t['group']}; font-weight: bold; text-align: left;
+        border: none; border-bottom: 1px solid {t['border']}; border-radius: 0; padding: 6px 8px; }}
+    QToolButton#sectionHeader:hover {{ background: {t['panel2']}; }}
     QCheckBox {{ background: transparent; spacing: 6px; }}
     QCheckBox::indicator {{ width: 13px; height: 13px; border: 1px solid {t['faint']}; border-radius: 3px; background: {t['canvas']}; }}
     QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}

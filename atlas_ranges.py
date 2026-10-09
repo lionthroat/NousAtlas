@@ -743,12 +743,10 @@ class RangesPanel(QWidget):
             self.btn_use_sel.hide()
             return
         if not is_map:
-            self.title.setText("Layers")
+            self.title.setText("")
             maps = [t for t in book.meta["maps"] if book.sheet(t) is not None]
-            text = f"“{ws.title}” isn't a map yet."
-            if maps:
-                text += " Maps in this workbook: " + ", ".join(maps) + "."
-            self.no_map_text.setText(text)
+            self.no_map_text.setText(f"{ws.title} isn't a map. Layers live on map sheets; "
+                                     "if this sheet has a grid, Atlas can use it.")
             self.btn_detect.show()
             self.btn_use_sel.show()
             return
@@ -777,18 +775,39 @@ class RangesPanel(QWidget):
         self.list.blockSignals(True)
         self.list.clear()
         current = None
-        for layer in book.ranges.layers:
-            text = layer.name if layer.has_map(ws.title) else f"{layer.name}  (not painted here)"
-            it = QListWidgetItem(swatch(layer.color), text)
-            it.setData(Qt.UserRole, layer.name)
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-            it.setCheckState(Qt.Checked if layer.visible else Qt.Unchecked)
-            self.list.addItem(it)
-            if layer.name == self.st.layer:
-                current = it
-        if current is None and self.list.count():
-            current = self.list.item(0)
-            self.st.layer = current.data(Qt.UserRole)
+        here = [l for l in book.ranges.layers if l.has_map(ws.title)]
+        rest = [l for l in book.ranges.layers if not l.has_map(ws.title)]
+        maps = [t for t in book.meta["maps"] if book.sheet(t) is not None]
+        for group, layers in (("", here), ("Not on this map", rest)):
+            if not layers:
+                continue
+            if group:
+                head = QListWidgetItem(group)
+                head.setFlags(Qt.NoItemFlags)
+                f = head.font()
+                f.setPointSizeF(max(7.0, f.pointSizeF() - 1))
+                head.setFont(f)
+                self.list.addItem(head)
+            for layer in layers:
+                text = layer.name
+                if group:
+                    where = [t for t in maps if layer.has_map(t)]
+                    text += f"  · on {', '.join(where)}" if where else "  · not painted yet"
+                it = QListWidgetItem(swatch(layer.color), text)
+                it.setData(Qt.UserRole, layer.name)
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Checked if layer.visible else Qt.Unchecked)
+                if group:
+                    it.setForeground(QColor(self.window.theme["faint"]))
+                self.list.addItem(it)
+                if layer.name == self.st.layer:
+                    current = it
+        if current is None:
+            for i in range(self.list.count()):
+                if self.list.item(i).data(Qt.UserRole):
+                    current = self.list.item(i)
+                    self.st.layer = current.data(Qt.UserRole)
+                    break
         if current is not None:
             self.list.setCurrentItem(current)
         self.list.blockSignals(False)
@@ -1108,12 +1127,33 @@ class RangesPanel(QWidget):
         layer = self._selected_layer()
         if layer is None:
             return
-        if QMessageBox.question(self, "Delete layer",
-                                f"Delete the {layer.name} layer and everything painted for it, on every map?\n"
-                                "You can undo this.") != QMessageBox.Yes:
-            return
-        self.window.book.begin([])
-        self.window.book.ranges.layers = [l for l in self.window.book.ranges.layers if l.name != layer.name]
+        book = self.window.book
+        here = self.window.current_ws().title
+        maps = [t for t in book.meta["maps"] if book.sheet(t) is not None]
+        counts = {t: len({sq for cells in layer.maps.get(t, {}).values() for sq, lv in cells.items() if lv})
+                  for t in maps}
+        painted = [t for t in maps if counts[t]]
+        if painted:
+            box = QMessageBox(self)
+            box.setWindowTitle(layer.name)
+            where = "; ".join(f"{t} ({counts[t]} square{'s' if counts[t] != 1 else ''})" for t in painted)
+            box.setText(f"{layer.name} is painted on: {where}.")
+            box.setInformativeText("Ctrl+Z undoes either choice.")
+            only_here = box.addButton(f"Remove from {here}", QMessageBox.AcceptRole) if here in painted and len(painted) > 1 else None
+            everywhere = box.addButton("Delete the layer" if painted == [here] or len(painted) == 1 else
+                                       "Delete it everywhere", QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            choice = box.clickedButton()
+            if choice is only_here and only_here is not None:
+                book.begin([])
+                book.ranges.get(layer.name).maps.pop(here, None)
+                book.done("ranges")
+                return
+            if choice is not everywhere:
+                return
+        book.begin([])
+        book.ranges.layers = [l for l in book.ranges.layers if l.name != layer.name]
         self.window.book.meta.get("path_ends", {}).pop(layer.name, None)
         if self.st.layer == layer.name:
             self.st.layer = None
