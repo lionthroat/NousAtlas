@@ -1236,12 +1236,18 @@ class SheetView(QAbstractScrollArea):
     def focusOutEvent(self, e):
         super().focusOutEvent(e)
         if self._drag is not None and e.reason() != Qt.PopupFocusReason:
-            self.end_drag()
+            try:
+                self.end_drag()
+            except RuntimeError:        # the window is closing
+                self._drag = None
 
     def changeEvent(self, e):
         super().changeEvent(e)
         if e.type() == e.Type.ActivationChange and not self.isActiveWindow() and self._drag is not None:
-            self.end_drag()
+            try:
+                self.end_drag()
+            except RuntimeError:
+                self._drag = None
 
     def mouseDoubleClickEvent(self, e):
         pos = e.position().toPoint()

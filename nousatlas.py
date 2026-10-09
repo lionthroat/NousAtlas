@@ -1953,11 +1953,13 @@ class MainWindow(QMainWindow):
                 bits.append(ranges.level_name(self.book, st.level or 3).lower())
             extra = f" ({', '.join(bits)})" if bits else ""
             if st.erasing:
-                self.paint_label.setText(f"<b>Eraser · {st.layer}</b>. Drag over squares to take them out; "
-                                         "Ctrl+Z undoes a stroke; Esc puts it down.")
+                how = "Drag a rectangle" if st.shape == "rect" else "Drag over squares"
+                self.paint_label.setText(f"<b>Eraser · {st.layer}</b>. {how} to take them out; "
+                                         "Ctrl+Z undoes one; Esc puts it down.")
             else:
-                self.paint_label.setText(f"<b>Brush · {st.layer}</b>{extra}. Drag over squares to add them; "
-                                         "Shift-drag removes; Ctrl+Z undoes a stroke; Esc puts it down.")
+                how = "Drag a rectangle" if st.shape == "rect" else "Drag over squares"
+                self.paint_label.setText(f"<b>Brush · {st.layer}</b>{extra}. {how} to add; "
+                                         "Shift-drag removes; Ctrl+Z undoes one; Esc puts it down.")
         self.paint_bar.setVisible(on)
 
     # ------------------------------------------------------------ square cards

@@ -527,6 +527,7 @@ class ViewState:
         self.level = 3
         self.painting = False        # a tool is picked up (drag on the map)
         self.erasing = False         # ... and it's the eraser
+        self.shape = "rect"          # "rect" (drag a rectangle) or "free" (every square passed over)
         self.layer = None            # the selected layer
         self.solo = None
         self.all_areas = False       # False: other layers' areas fade (paths/markers always show)
@@ -635,6 +636,27 @@ class Overlay:
             return
         st = self.window.range_state
         scheme = book.ranges.scheme
+        pv = self.window.grid.tool.preview() if self.window.grid.tool is not None else None
+        if pv is not None:
+            (x1, y1, x2, y2), erase = pv
+            if x1 <= sq[0] <= x2 and y1 <= sq[1] <= y2:
+                layer = book.ranges.get(st.layer)
+                tint = "BF616A" if erase else (layer.color if layer else "88C0D0")
+                p.save()
+                inner = rect.adjusted(0, 0, -1, -1)
+                p.fillRect(inner, qcolor(tint, 110))
+                pen = QPen(qcolor(tint), 2, Qt.DashLine)
+                p.setPen(pen)
+                l, r_, t_, b_ = inner.left(), inner.right(), inner.top(), inner.bottom()
+                if sq[0] == x1:
+                    p.drawLine(l + 1, t_, l + 1, b_)
+                if sq[0] == x2:
+                    p.drawLine(r_, t_, r_, b_)
+                if sq[1] == y1:
+                    p.drawLine(l, t_ + 1, r_, t_ + 1)
+                if sq[1] == y2:
+                    p.drawLine(l, b_, r_, b_)
+                p.restore()
         parts = view_parts(scheme, st.view)
         areas, lines, marks = [], [], []
         for layer in book.ranges.layers:
@@ -730,7 +752,9 @@ def _part_seams(r, n):
 
 
 class Brush:
-    """Paint by dragging (optional): the grid's tool while it's switched on."""
+    """The brush and eraser on the map. Two shapes: a rectangle (drag from
+    corner to corner; it's applied when you let go) or freehand (every square
+    the mouse passes over). A click does one square either way."""
 
     def __init__(self, window):
         self.window = window
@@ -742,43 +766,71 @@ class Brush:
         return (st.painting and st.layer is not None and w.book is not None
                 and w.current_ws() is not None and w.current_ws().title in w.book.meta["maps"])
 
-    def _apply(self, row, col):
+    def _info(self):
+        return self.window.book.meta["maps"][self.window.current_ws().title]
+
+    def _paint(self, squares):
         w = self.window
-        info = w.book.meta["maps"][w.current_ws().title]
-        sq = map_square(info, row, col)
-        if sq is None or sq in self.stroke["done"]:
-            return
-        self.stroke["done"].add(sq)
         layer = w.book.ranges.get(w.range_state.layer)
-        if layer is None:
+        if layer is None or not squares:
             return
         st = w.range_state
-        w.book.ranges.paint(layer, w.current_ws().title, st.paint_blocks(w.book.ranges.scheme), [sq],
+        w.book.ranges.paint(layer, w.current_ws().title, st.paint_blocks(w.book.ranges.scheme), list(squares),
                             0 if self.stroke["erase"] else (st.level or 3))
-        w.grid.viewport().update()
+
+    def _square(self, row, col):
+        """The map square under a cell, clamped to the map's edge."""
+        info = self._info()
+        x = min(max(col - info["col"] + 1, 1), info["cols"])
+        y = min(max(row - info["row"] + 1, 1), info["rows"])
+        return (x, y)
+
+    def preview(self):
+        """(rectangle of squares, erasing?) while a rectangle is being dragged."""
+        if self.stroke is None or self.stroke["shape"] != "rect":
+            return None
+        (x1, y1), (x2, y2) = self.stroke["start"], self.stroke["end"]
+        return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)), self.stroke["erase"]
 
     def press(self, row, col, e):
         if not self.active() or e.button() not in (Qt.LeftButton,):
             return False
-        info = self.window.book.meta["maps"][self.window.current_ws().title]
-        if map_square(info, row, col) is None:
+        if map_square(self._info(), row, col) is None:
             return False
         if self.stroke is not None:
-            self.window.book.done("ranges")
+            self.release(None)
+        st = self.window.range_state
+        erase = bool(e.modifiers() & Qt.ShiftModifier) or st.erasing
+        sq = self._square(row, col)
+        self.stroke = {"done": set(), "erase": erase, "shape": st.shape, "start": sq, "end": sq}
         self.window.book.begin([])
-        erase = bool(e.modifiers() & Qt.ShiftModifier) or self.window.range_state.erasing
-        self.stroke = {"done": set(), "erase": erase}
-        self._apply(row, col)
+        if st.shape == "free":
+            self.stroke["done"].add(sq)
+            self._paint([sq])
+        self.window.grid.viewport().update()
         return True
 
     def move(self, row, col, e):
-        if self.stroke is not None:
-            self._apply(row, col)
+        if self.stroke is None:
+            return
+        sq = self._square(row, col)
+        if self.stroke["shape"] == "rect":
+            if sq != self.stroke["end"]:
+                self.stroke["end"] = sq
+                self.window.grid.viewport().update()
+        elif sq not in self.stroke["done"]:
+            self.stroke["done"].add(sq)
+            self._paint([sq])
+            self.window.grid.viewport().update()
 
     def release(self, e):
-        if self.stroke is not None:
-            self.stroke = None
-            self.window.book.done("ranges")
+        if self.stroke is None:
+            return
+        if self.stroke["shape"] == "rect":
+            (x1, y1, x2, y2), _ = self.preview()
+            self._paint([(x, y) for x in range(x1, x2 + 1) for y in range(y1, y2 + 1)])
+        self.stroke = None
+        self.window.book.done("ranges")
 
     def hover(self, row, col):
         pass
@@ -805,6 +857,14 @@ def tool_icon(kind, fill_hex, line_hex, size=26):
         p.setBrush(qcolor(fill_hex))
         p.drawPolygon(QPolygonF([QPointF(12.0, 11.0), QPointF(15.0, 14.0),        # bristles
                                  QPointF(9.5, 21.5), QPointF(4.0, 22.0), QPointF(4.5, 16.5)]))
+    elif kind == "rect":
+        p.setPen(QPen(line, 1.6, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(4, 6, 18, 14))
+    elif kind == "free":
+        p.setPen(QPen(line, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        path = QPolygonF([QPointF(3, 18), QPointF(8, 10), QPointF(13, 16), QPointF(18, 7), QPointF(23, 12)])
+        p.drawPolyline(path)
     else:
         p.translate(13, 13)
         p.rotate(-40)
@@ -933,6 +993,23 @@ class RangesPanel(QWidget):
         self.erase_btn.toggled.connect(self.erase_toggled)
         row.addWidget(self.paint_btn)
         row.addWidget(self.erase_btn)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setObjectName("toolSep")
+        row.addWidget(sep)
+        self.shape_btns = {}
+        self.shape_group = QButtonGroup(self)
+        for key, tip in (("rect", "Rectangle: drag from corner to corner; it fills when you let go"),
+                         ("free", "Freehand: every square the mouse passes over (good for paths)")):
+            b_ = QToolButton()
+            b_.setObjectName("shapeBtn")
+            b_.setCheckable(True)
+            b_.setIconSize(QSize(18, 18))
+            b_.setToolTip(tip)
+            b_.clicked.connect(lambda _=False, k=key: self.set_shape(k))
+            self.shape_group.addButton(b_)
+            self.shape_btns[key] = b_
+            row.addWidget(b_)
         self.tool_hint = QLabel()
         self.tool_hint.setObjectName("muted")
         self.tool_hint.setWordWrap(True)
@@ -1172,9 +1249,13 @@ class RangesPanel(QWidget):
         col = self.window.theme["text"].lstrip("#")
         self.paint_btn.setIcon(tool_icon("brush", layer.color if layer else col, col))
         self.erase_btn.setIcon(tool_icon("eraser", col, col))
-        self.tool_hint.setText("Drag on the map to erase" if (st.painting and st.erasing) else
-                               "Drag on the map to paint" if st.painting else
-                               "Pick the brush, then drag on the map")
+        for key, b_ in self.shape_btns.items():
+            b_.setIcon(tool_icon(key, col, col, 18))
+            b_.setChecked(st.shape == key)
+        shape = "a rectangle" if st.shape == "rect" else "over squares"
+        self.tool_hint.setText(f"Drag {shape} to erase" if (st.painting and st.erasing) else
+                               f"Drag {shape} to paint" if st.painting else
+                               "Pick up the brush")
         if layer is None:
             self.work_title.setText("Pick or make a layer to put squares in")
         else:
@@ -1399,6 +1480,11 @@ class RangesPanel(QWidget):
         self.st.solo = None if self.st.solo == name else name
         self.update_notes()
         self.window.grid.viewport().update()
+
+    def set_shape(self, shape):
+        self.st.shape = shape
+        self.update_notes()
+        self.window.update_paint_bar()
 
     def paint_toggled(self, on):
         self._tool(on, erasing=False)

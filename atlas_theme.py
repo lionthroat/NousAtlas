@@ -97,6 +97,10 @@ def stylesheet(t):
     QToolButton#toolBtn {{ background: {t['panel2']}; border: 1px solid {t['border']}; border-radius: 6px; padding: 4px; }}
     QToolButton#toolBtn:hover {{ border-color: {t['accent']}; }}
     QToolButton#toolBtn:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}
+    QToolButton#shapeBtn {{ background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 3px; }}
+    QToolButton#shapeBtn:hover {{ border-color: {t['border']}; }}
+    QToolButton#shapeBtn:checked {{ background: {t['panel2']}; border-color: {t['accent']}; }}
+    QFrame#toolSep {{ color: {t['border']}; }}
     QCheckBox {{ background: transparent; spacing: 6px; }}
     QCheckBox::indicator {{ width: 13px; height: 13px; border: 1px solid {t['faint']}; border-radius: 3px; background: {t['canvas']}; }}
     QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}

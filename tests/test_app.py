@@ -670,13 +670,45 @@ vp = w.grid.viewport()
 pa = w.grid.cell_rect(*R.square_cell(info, (14, 2))).center()
 pb = w.grid.cell_rect(*R.square_cell(info, (15, 2))).center()
 QTest.mousePress(vp, Qt.LeftButton, Qt.NoModifier, pa)
-assert w.grid._drag is not None and w.book.ranges.get("Brush test").present(mp, (14, 2))
+assert w.grid._drag is not None
 steps = len(w.book.undo_stack)
 # the button is up but nobody told us (a screenshot tool ate the release): the next move ends the stroke
 ev = QMouseEvent(QEvent.MouseMove, QPointF(pb), QPointF(vp.mapToGlobal(pb)), Qt.NoButton, Qt.NoButton, Qt.NoModifier)
 QApplication.sendEvent(vp, ev)
-assert w.grid._drag is None and not w.book.ranges.get("Brush test").present(mp, (15, 2))
+assert w.grid._drag is None and w.book.ranges.get("Brush test").present(mp, (14, 2))
+assert not w.book.ranges.get("Brush test").present(mp, (15, 2))
 w.on_hover(*R.square_cell(info, (9, 10)), vp.mapToGlobal(pb)); w.show_card()
 assert not w.card.isVisible()
 rp.paint_btn.setChecked(False)
 print("OK lost mouse-up")
+
+
+# ---- rectangles: drag corner to corner, again and again; the eraser trims; freehand for paths
+rp = w.ranges_panel
+w.book.begin([]); w.book.ranges.add("Rect test"); w.book.done("ranges")
+w.range_state.layer = "Rect test"; rp.refresh(); rp.set_shape("rect")
+rp.paint_btn.setChecked(True)
+def drag(a_sq, b_sq, mods=Qt.NoModifier):
+    pa = vp_center(a_sq); pb = vp_center(b_sq)
+    QTest.mousePress(vp, Qt.LeftButton, mods, pa)
+    QTest.mouseMove(vp, pb)
+    assert w.grid.tool.preview() is not None
+    QTest.mouseRelease(vp, Qt.LeftButton, mods, pb)
+def vp_center(sq):
+    return w.grid.cell_rect(*R.square_cell(info, sq)).center()
+drag((1, 10), (4, 12))                      # 4 x 3
+drag((6, 10), (7, 11))                      # another, separately
+rt = w.book.ranges.get("Rect test")
+assert all(rt.present(mp, (x, y)) for x in range(1, 5) for y in range(10, 13))
+assert rt.present(mp, (7, 11)) and not rt.present(mp, (5, 10))
+rp.erase_btn.setChecked(True)
+drag((2, 11), (3, 12))                      # trim a notch
+rt = w.book.ranges.get("Rect test")
+assert not rt.present(mp, (3, 12)) and rt.present(mp, (1, 12)) and rt.present(mp, (4, 10))
+w.undo(); assert w.book.ranges.get("Rect test").present(mp, (3, 12))      # one undo per rectangle
+rp.paint_btn.setChecked(True); rp.set_shape("free")
+QTest.mousePress(vp, Qt.LeftButton, Qt.NoModifier, vp_center((10, 14)))
+assert w.book.ranges.get("Rect test").present(mp, (10, 14))         # freehand paints as you go
+QTest.mouseRelease(vp, Qt.LeftButton, Qt.NoModifier, vp_center((10, 14)))
+rp.paint_btn.setChecked(False); rp.set_shape("rect")
+print("OK rectangles")
