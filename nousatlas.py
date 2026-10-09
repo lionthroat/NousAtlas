@@ -1962,6 +1962,13 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ square cards
     def on_hover(self, row, col, gpos):
+        if self.range_state.painting or self.grid._drag is not None or QApplication.mouseButtons() != Qt.NoButton:
+            # no cards while a tool is in hand or a button is down: they'd cover the squares
+            self.card_timer_show.stop()
+            self.card.hide()
+            self.card.key = None
+            self._hover = None
+            return
         ws = self.current_ws()
         info = self.book.meta["maps"].get(ws.title) if (ws is not None and self.book is not None) else None
         sq = ranges.map_square(info, row, col) if (info and row and col) else None
@@ -1982,7 +1989,7 @@ class MainWindow(QMainWindow):
             self.card_timer_show.start()
 
     def show_card(self):
-        if self._hover is None or self.book is None or self.grid.tool.active() and self.grid._drag:
+        if self._hover is None or self.book is None or self.range_state.painting or self.grid._drag is not None:
             return
         (map_title, sq), gpos = self._hover
         if not self.squares.has_content(map_title, sq):

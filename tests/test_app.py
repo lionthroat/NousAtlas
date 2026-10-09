@@ -658,3 +658,25 @@ w.open_sheet("Redsaint Map"); w.open_sheet("Fauna"); w.grid.set_current(7, 1)
 w.make_layer_for("Order test")
 assert seen["items"] == titles and seen["items"][seen["cur"]] == "Redsaint Map", seen
 print("OK tools")
+
+# ---- a lost mouse-up ends the stroke; no hover cards while a tool is in hand
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtCore import QPointF, QEvent
+rp = w.ranges_panel
+w.open_sheet(mp); w.show_layers_tab()
+w.range_state.layer = "Brush test"; rp.refresh()
+rp.paint_btn.setChecked(True)
+vp = w.grid.viewport()
+pa = w.grid.cell_rect(*R.square_cell(info, (14, 2))).center()
+pb = w.grid.cell_rect(*R.square_cell(info, (15, 2))).center()
+QTest.mousePress(vp, Qt.LeftButton, Qt.NoModifier, pa)
+assert w.grid._drag is not None and w.book.ranges.get("Brush test").present(mp, (14, 2))
+steps = len(w.book.undo_stack)
+# the button is up but nobody told us (a screenshot tool ate the release): the next move ends the stroke
+ev = QMouseEvent(QEvent.MouseMove, QPointF(pb), QPointF(vp.mapToGlobal(pb)), Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+QApplication.sendEvent(vp, ev)
+assert w.grid._drag is None and not w.book.ranges.get("Brush test").present(mp, (15, 2))
+w.on_hover(*R.square_cell(info, (9, 10)), vp.mapToGlobal(pb)); w.show_card()
+assert not w.card.isVisible()
+rp.paint_btn.setChecked(False)
+print("OK lost mouse-up")

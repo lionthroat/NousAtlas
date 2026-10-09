@@ -1094,6 +1094,7 @@ class SheetView(QAbstractScrollArea):
             return
         self.setFocus()
         self.commit_if_editing()
+        self.cellHovered.emit(0, 0, None)          # a press puts any hover card away
         pos = e.position().toPoint()
         edge = self._border_hit(pos)
         if edge and e.button() == Qt.LeftButton:
@@ -1152,6 +1153,11 @@ class SheetView(QAbstractScrollArea):
 
     def mouseMoveEvent(self, e):
         pos = e.position().toPoint()
+        if self._drag is not None and not (e.buttons() & Qt.LeftButton):
+            # the button went up somewhere we never heard about (a screenshot
+            # tool, another window grabbing the mouse): finish the drag now
+            self.end_drag()
+            return
         if self._drag is None:
             edge = self._border_hit(pos)
             if edge:
@@ -1214,6 +1220,9 @@ class SheetView(QAbstractScrollArea):
             self.currentChanged.emit()
 
     def mouseReleaseEvent(self, e):
+        self.end_drag(e)
+
+    def end_drag(self, e=None):
         drag, self._drag = self._drag, None
         if not drag:
             return
@@ -1223,6 +1232,16 @@ class SheetView(QAbstractScrollArea):
                 self.set_size(axis, idx, size)
         elif drag[0] == "tool":
             self.tool.release(e)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        if self._drag is not None and e.reason() != Qt.PopupFocusReason:
+            self.end_drag()
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() == e.Type.ActivationChange and not self.isActiveWindow() and self._drag is not None:
+            self.end_drag()
 
     def mouseDoubleClickEvent(self, e):
         pos = e.position().toPoint()

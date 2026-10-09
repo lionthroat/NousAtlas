@@ -1419,6 +1419,8 @@ class RangesPanel(QWidget):
                 return
         self.st.painting = on
         self.st.erasing = erasing and on
+        if on:
+            self.window.card.hide()
         if on and len(self.window.selected_squares()) > 1:
             self.window.add_selection_to_layer(remove=erasing)
         self.update_notes()
