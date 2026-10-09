@@ -864,8 +864,10 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(center)
         self.splitter.addWidget(self.right)
         self.right.setMinimumWidth(260)
-        self.splitter.setCollapsible(2, False)
+        self.splitter.setCollapsible(2, True)       # drag it shut if you like; Ctrl+\ brings it back
         self.splitter.setCollapsible(0, True)
+        self.splitter.splitterMoved.connect(lambda *a: self.right_panel_moved())
+        self._panel_auto = False                    # opened by Layers; close it again when Layers goes off
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([230, 900, 320])
         self.splitter.setHandleWidth(1)
@@ -897,6 +899,7 @@ class MainWindow(QMainWindow):
                 self.splitter.setSizes([int(x) for x in sizes])
             except (TypeError, ValueError):
                 pass
+        self.a_panel.setChecked(self.panel_open())
 
     # ------------------------------------------------------------ actions
     def act(self, text, fn, shortcut=None, checkable=False, tip=None):
@@ -1060,7 +1063,7 @@ class MainWindow(QMainWindow):
         self.layers_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.layers_btn.setPopupMode(QToolButton.MenuButtonPopup)
         self.layers_btn.setToolTip("Show layers on maps (the Layers tab). The arrow has New layer (Ctrl+L).")
-        self.layers_btn.clicked.connect(lambda on: self.show_layers_tab() if on else self.right.setCurrentIndex(0))
+        self.layers_btn.clicked.connect(lambda on: self.show_layers_tab() if on else self.hide_layers())
         lm = QMenu(self)
         lm.addAction(self.a_layer_here)
         lm.addAction("Done painting", lambda: self.stop_painting())
@@ -1116,6 +1119,10 @@ class MainWindow(QMainWindow):
 
         v = mb.addMenu("&View")
         v.addAction(self.a_goto)
+        self.a_panel = self.act("Side panel (Cell and Layers)", lambda on: (self.set_panel(on),
+                                setattr(self, "_panel_auto", False)), "Ctrl+\\", True)
+        self.a_panel.setChecked(True)
+        v.addAction(self.a_panel)
         v.addAction(self.a_back)
         v.addAction(self.a_fwd)
         v.addSeparator()
@@ -1610,23 +1617,50 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ painting
     def layers_showing(self):
-        return self.right.currentIndex() == 1
+        return self.right.currentIndex() == 1 and self.panel_open()
 
     def right_tab_changed(self, i):
-        self.layers_btn.setChecked(i == 1)
+        self.layers_btn.setChecked(self.layers_showing())
         if i == 1:
             self.ranges_panel.refresh()
         else:
             self.stop_painting(quiet=True)
         self.grid.viewport().update()
 
-    def show_layers_tab(self):
-        """Open the Layers tab, and the side panel too if it's been dragged narrow."""
+    def panel_open(self):
+        return self.splitter.sizes()[2] > 0
+
+    def set_panel(self, show):
         sizes = self.splitter.sizes()
-        if len(sizes) == 3 and sizes[2] < 260:
-            take = 330 - sizes[2]
-            self.splitter.setSizes([sizes[0], max(300, sizes[1] - take), 330])
+        if show and sizes[2] == 0:
+            self.splitter.setSizes([sizes[0], max(300, sizes[1] - 330), 330])
+        elif not show and sizes[2] > 0:
+            self.splitter.setSizes([sizes[0], sizes[1] + sizes[2], 0])
+        self.a_panel.setChecked(show)
+        self.grid.viewport().update()
+
+    def right_panel_moved(self):
+        self.a_panel.setChecked(self.panel_open())
+        if not self.panel_open():
+            self._panel_auto = False
+            self.stop_painting(quiet=True)
+        self.layers_btn.setChecked(self.layers_showing())
+        self.grid.viewport().update()
+
+    def show_layers_tab(self):
+        """Open the Layers tab, sliding the side panel open if it's shut."""
+        if not self.panel_open():
+            self._panel_auto = True
+            self.set_panel(True)
         self.right.setCurrentIndex(1)
+        self.layers_btn.setChecked(True)
+
+    def hide_layers(self):
+        self.right.setCurrentIndex(0)
+        if self._panel_auto:
+            self._panel_auto = False
+            self.set_panel(False)
+        self.layers_btn.setChecked(False)
 
     def sync_style_menu(self):
         layer = self.book.ranges.get(self.range_state.layer) if (self.book and self.range_state.layer) else None

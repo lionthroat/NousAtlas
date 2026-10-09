@@ -453,9 +453,15 @@ print("OK toolbar")
 # ---- Layers panel can't get lost; Draw-as from the button menu; only the selected area draws
 w.open_sheet(mp)
 w.right.setCurrentIndex(0)
-w.splitter.setSizes([200, 1200, 0]); app.processEvents()
+w.splitter.setSizes([200, 1200, 0]); w.right_panel_moved(); app.processEvents()
+assert not w.panel_open() and not w.layers_showing()
 w.layers_btn.click(); app.processEvents()
 assert w.splitter.sizes()[2] >= 260 and w.layers_showing(), w.splitter.sizes()
+w.layers_btn.click(); app.processEvents()
+assert not w.panel_open(), w.splitter.sizes()        # it was shut before, so it shuts again
+w.a_panel.trigger(); assert w.panel_open()
+w.layers_btn.click(); w.layers_btn.click(); assert w.panel_open()   # opened by hand: stays open
+w.show_layers_tab()
 w.range_state.layer = "South track"
 w.sync_style_menu(); assert w.style_menu.title() == "Draw South track as"
 w.set_layer_style("marker"); assert w.book.ranges.get("South track").style == "marker"
