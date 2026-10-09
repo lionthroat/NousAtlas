@@ -312,10 +312,34 @@ def square_cell(info, sq):
 # ---------------------------------------------------------------- drawing
 
 
+def night_shade(hex6):
+    """The night version of a layer colour: darker and a little bluer."""
+    import colorsys
+    r, g, b = (int(hex6[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    r, g, b = colorsys.hsv_to_rgb(h, min(1.0, s * 1.1), v * 0.52)
+    nr, ng, nb = 0.20, 0.24, 0.42                     # a night blue to lean toward
+    mix = 0.28
+    r, g, b = r * (1 - mix) + nr * mix, g * (1 - mix) + ng * mix, b * (1 - mix) + nb * mix
+    return "%02X%02X%02X" % (round(r * 255), round(g * 255), round(b * 255))
+
+
+def view_blocks(view):
+    return {"day": DAY, "night": NIGHT, "all": set(BLOCKS)}.get(view, {view} if isinstance(view, int) else set(BLOCKS))
+
+
 class ViewState:
+    @property
+    def split(self):
+        return self.view == "split"
+
+    @split.setter
+    def split(self, on):
+        self.view = "split" if on else "all"
+
     def __init__(self):
         self.blocks = set(BLOCKS)
-        self.split = True
+        self.view = "split"
         self.level = 3
         self.painting = False
         self.layer = None            # name of the layer being painted
@@ -384,11 +408,11 @@ class Overlay:
     def _view(self, layer, map_title, sq):
         """(day level, night level) in split view, else (level, level)."""
         st = self.window.range_state
-        if st.split:
+        if st.view == "split":
             d = max((layer.level(map_title, b, sq) for b in DAY), default=0)
             n = max((layer.level(map_title, b, sq) for b in NIGHT), default=0)
             return d, n
-        lv = max((layer.level(map_title, b, sq) for b in st.blocks), default=0)
+        lv = max((layer.level(map_title, b, sq) for b in view_blocks(st.view)), default=0)
         return lv, lv
 
     def paint(self, p, ws, row, col, rect):
@@ -427,8 +451,9 @@ class Overlay:
             x1 = inner.left() + inner.width() * i // k
             x2 = inner.left() + inner.width() * (i + 1) // k
             stripe = QRect(x1, inner.top(), x2 - x1, inner.height())
-            if d == n:
-                p.fillRect(stripe, qcolor(layer.color, ALPHA[d]))
+            if st.view != "split":
+                night_view = st.view == "night" or (isinstance(st.view, int) and st.view in NIGHT)
+                p.fillRect(stripe, qcolor(night_shade(layer.color) if night_view else layer.color, ALPHA[d]))
                 continue
             tl, br = stripe.topLeft(), stripe.bottomRight()
             tr, bl = stripe.topRight(), stripe.bottomLeft()
@@ -436,8 +461,12 @@ class Overlay:
                 p.setBrush(qcolor(layer.color, ALPHA[d]))
                 p.drawPolygon(QPolygon([tl, tr, bl]))
             if n:
-                p.setBrush(qcolor(layer.color, ALPHA[n]))
+                p.setBrush(qcolor(night_shade(layer.color), ALPHA[n]))
                 p.drawPolygon(QPolygon([tr, br, bl]))
+            if d and n:
+                p.setPen(QPen(QColor(20, 20, 26, 110), 1))
+                p.drawLine(tr, bl)
+                p.setPen(Qt.NoPen)
         c = QPointF(inner.center())
         size = min(inner.width(), inner.height())
         for layer, d, n in lines:
@@ -592,41 +621,45 @@ class RangesPanel(QWidget):
         b.setContentsMargins(0, 0, 0, 0)
         b.setSpacing(8)
 
-        # Time: only for areas (paths and markers are simply there)
-        self.time_box = QWidget()
-        tb = QVBoxLayout(self.time_box)
-        tb.setContentsMargins(0, 0, 0, 0)
-        tb.setSpacing(4)
-        lbl = QLabel("Time")
+        # Show: what the map displays. Only changes the view.
+        self.view_box = QWidget()
+        vb = QVBoxLayout(self.view_box)
+        vb.setContentsMargins(0, 0, 0, 0)
+        vb.setSpacing(4)
+        lbl = QLabel("Show")
         lbl.setObjectName("faint")
-        tb.addWidget(lbl)
+        vb.addWidget(lbl)
+        self.view_group = QButtonGroup(self)
+        self.view_btns = {}
         row = QHBoxLayout()
         row.setSpacing(3)
-        self.block_btns = {}
+        for key, label, tip in (("split", "Day / night", "Each square: day in the bright top-left half, night in the "
+                                                         "dark bottom-right half"),
+                                ("day", "Day", "08:00–20:00"), ("night", "Night", "20:00–08:00"),
+                                ("all", "All", "Anywhere at any time, one colour")):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            self.view_group.addButton(btn)
+            self.view_btns[key] = btn
+            btn.clicked.connect(lambda _=False, k=key: self.set_view(k))
+            row.addWidget(btn)
+        row.addStretch()
+        vb.addLayout(row)
+        row = QHBoxLayout()
+        row.setSpacing(3)
         for blk in BLOCKS:
             btn = QPushButton(f"{blk:02d}")
             btn.setCheckable(True)
             btn.setFixedWidth(34)
-            btn.setToolTip(f"{block_label(blk)}–{block_label((blk + 4) % 24)}")
-            btn.clicked.connect(self.blocks_clicked)
-            self.block_btns[blk] = btn
+            btn.setToolTip(f"Show {block_label(blk)}–{block_label((blk + 4) % 24)} only")
+            self.view_group.addButton(btn)
+            self.view_btns[blk] = btn
+            btn.clicked.connect(lambda _=False, k=blk: self.set_view(k))
             row.addWidget(btn)
         row.addStretch()
-        tb.addLayout(row)
-        row = QHBoxLayout()
-        row.setSpacing(3)
-        for label, blocks in (("Day", DAY), ("Night", NIGHT), ("All", set(BLOCKS))):
-            btn = QPushButton(label)
-            btn.clicked.connect(lambda _=False, bl=blocks: self.set_blocks(bl))
-            row.addWidget(btn)
-        self.split_box = QCheckBox("Split day / night")
-        self.split_box.setToolTip("Each square shows day in its top-left half and night in its bottom-right half.\n"
-                                  "Day = 08:00–20:00, night = 20:00–08:00.")
-        self.split_box.toggled.connect(self.split_toggled)
-        row.addWidget(self.split_box)
-        row.addStretch()
-        tb.addLayout(row)
-        b.addWidget(self.time_box)
+        vb.addLayout(row)
+        b.addWidget(self.view_box)
 
         self.list = QListWidget()
         self.list.setMinimumHeight(90)
@@ -687,6 +720,42 @@ class RangesPanel(QWidget):
         self.level_group.idClicked.connect(self.level_clicked)
         row.addStretch()
         b.addLayout(row)
+        # Paint for: which times the brush paints. Only for areas.
+        self.time_box = QWidget()
+        tb = QVBoxLayout(self.time_box)
+        tb.setContentsMargins(0, 0, 0, 0)
+        tb.setSpacing(4)
+        lbl = QLabel("Paint for")
+        lbl.setObjectName("faint")
+        tb.addWidget(lbl)
+        self.paint_group = QButtonGroup(self)
+        self.paint_btns = {}
+        row = QHBoxLayout()
+        row.setSpacing(3)
+        for key, label in (("all", "All day"), ("day", "Day"), ("night", "Night")):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            self.paint_group.addButton(btn)
+            self.paint_btns[key] = btn
+            btn.clicked.connect(lambda _=False, k=key: self.set_blocks({"all": set(BLOCKS), "day": DAY, "night": NIGHT}[k]))
+            row.addWidget(btn)
+        row.addStretch()
+        tb.addLayout(row)
+        row = QHBoxLayout()
+        row.setSpacing(3)
+        self.block_btns = {}
+        for blk in BLOCKS:
+            btn = QPushButton(f"{blk:02d}")
+            btn.setCheckable(True)
+            btn.setFixedWidth(34)
+            btn.setToolTip(f"Paint {block_label(blk)}–{block_label((blk + 4) % 24)} only")
+            self.paint_group.addButton(btn)
+            self.block_btns[blk] = btn
+            btn.clicked.connect(lambda _=False, k=blk: self.set_blocks({k}))
+            row.addWidget(btn)
+        row.addStretch()
+        tb.addLayout(row)
+        b.addWidget(self.time_box)
         # kept for the window's own use: painting on / off
         self.paint_btn = QPushButton()
         self.paint_btn.setCheckable(True)
@@ -751,12 +820,7 @@ class RangesPanel(QWidget):
             self.btn_use_sel.show()
             return
         self.title.setText(ws.title)
-        for blk, btn in self.block_btns.items():
-            btn.setChecked(blk in self.st.blocks)
-            btn.setEnabled(True)
-        self.split_box.blockSignals(True)
-        self.split_box.setChecked(self.st.split)
-        self.split_box.blockSignals(False)
+        self.sync_times()
         self.all_box.blockSignals(True)
         self.all_box.setChecked(self.st.all_areas)
         self.all_box.blockSignals(False)
@@ -884,7 +948,8 @@ class RangesPanel(QWidget):
                 it.setTextAlignment(Qt.AlignCenter)
                 it.setForeground(QColor(t["faint"]))
                 if lv:
-                    it.setBackground(qcolor(layer.color, ALPHA[lv]))
+                    tone = night_shade(layer.color) if (b in NIGHT and layer.style == "area") else layer.color
+                    it.setBackground(qcolor(tone, ALPHA[lv]))
                 it.setFlags(Qt.ItemIsEnabled)
                 it.setToolTip(f"{layer.name} at {block_label(b)}: {LEVELS.get(lv, 'not here')}. Click to change.")
                 tbl.setItem(i, 1 + j, it)
@@ -965,6 +1030,29 @@ class RangesPanel(QWidget):
         w.book.done("ranges")
 
     # -- handlers
+    def sync_times(self):
+        st = self.st
+        btn = self.view_btns.get(st.view)
+        if btn is not None:
+            btn.setChecked(True)
+        key = {frozenset(BLOCKS): "all", frozenset(DAY): "day", frozenset(NIGHT): "night"}.get(frozenset(st.blocks))
+        if key:
+            self.paint_btns[key].setChecked(True)
+        elif len(st.blocks) == 1:
+            self.block_btns[next(iter(st.blocks))].setChecked(True)
+        else:
+            self.paint_group.setExclusive(False)
+            for b, bb in self.block_btns.items():
+                bb.setChecked(b in st.blocks)
+            for bb in self.paint_btns.values():
+                bb.setChecked(False)
+            self.paint_group.setExclusive(True)
+
+    def set_view(self, view):
+        self.st.view = view
+        self.sync_times()
+        self.window.grid.viewport().update()
+
     def blocks_clicked(self):
         chosen = {b for b, btn in self.block_btns.items() if btn.isChecked()}
         if not chosen:
@@ -972,10 +1060,11 @@ class RangesPanel(QWidget):
         self.set_blocks(chosen, keep_split=True)
 
     def set_blocks(self, blocks, keep_split=False):
+        """Which times the brush paints. Doesn't touch what's shown."""
         self.st.blocks = set(blocks)
-        if set(blocks) != set(BLOCKS):
-            self.st.split = False      # splitting only makes sense when looking at the whole day
-        self.refresh()
+        self.sync_times()
+        self.update_notes()
+        self.window.update_paint_bar()
         self.window.grid.viewport().update()
 
     def split_toggled(self, on):

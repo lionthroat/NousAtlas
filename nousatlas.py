@@ -1853,7 +1853,7 @@ class MainWindow(QMainWindow):
         name, ok = QInputDialog.getItem(
             self, "Layer on these squares",
             f"Put {where} in a layer as {ranges.LEVELS.get(st.level or 3).upper()}, "
-            f"{ranges.times_label(st.blocks).upper()}.\n(Those come from Time and Paint on the Layers tab; "
+            f"{ranges.times_label(st.blocks).upper()}.\n(Those come from Brush and Paint for in the Layers section; "
             "change any square afterwards in the Here table there.)\n\nType a new name or pick an existing layer:",
             names, -1 if not names else 0, True)
         name = (name or "").strip()

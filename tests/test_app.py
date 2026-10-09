@@ -583,3 +583,29 @@ tm = w.book.ranges.get("Two maps")
 assert tm is not None and not tm.has_map(mp) and tm.has_map("MAP — Year One")
 MB.exec = orig_exec
 print("OK panel five")
+
+# ---- Show and Paint for are separate; day and night draw in different tones
+rp = w.ranges_panel
+w.open_sheet(mp); w.show_layers_tab()
+w.book.begin([]); sc = w.book.ranges.add("Scorp test"); w.book.done("ranges")
+w.range_state.layer = "Scorp test"; rp.refresh()
+rp.set_view("split")
+rp.paint_btns["night"].click(); assert w.range_state.blocks == R.NIGHT and w.range_state.view == "split"
+w.book.begin([]); w.book.ranges.paint(w.book.ranges.get("Scorp test"), mp, w.range_state.blocks, [(1, 1), (8, 10)], 3); w.book.done("ranges")
+rp.paint_btns["day"].click(); assert w.range_state.blocks == R.DAY and w.range_state.view == "split"
+w.book.begin([]); w.book.ranges.paint(w.book.ranges.get("Scorp test"), mp, w.range_state.blocks, [(8, 10)], 3); w.book.done("ranges")
+class _Q(_P):
+    def __init__(self): super().__init__(); self.brushes = []
+    def setBrush(self, b): self.brushes.append(b.name() if hasattr(b, "name") else str(b))
+st = w.range_state; st.solo = None; st.layer = "Scorp test"
+day_hex, night_hex = "#" + w.book.ranges.get("Scorp test").color.lower(), "#" + R.night_shade(w.book.ranges.get("Scorp test").color).lower()
+r1, c1 = R.square_cell(info, (1, 1)); q = _Q(); w.grid.overlay.paint(q, w.book.sheet(mp), r1, c1, w.grid.cell_rect(r1, c1))
+assert night_hex in q.brushes and day_hex not in q.brushes, q.brushes          # night only: the dark half
+rb, cb = R.square_cell(info, (8, 10)); q = _Q(); w.grid.overlay.paint(q, w.book.sheet(mp), rb, cb, w.grid.cell_rect(rb, cb))
+assert night_hex in q.brushes and day_hex in q.brushes, q.brushes              # both: two tones
+rp.set_view("night"); q = _Q(); w.grid.overlay.paint(q, w.book.sheet(mp), r1, c1, w.grid.cell_rect(r1, c1))
+assert q.fills == 1
+rp.set_view("day"); q = _Q(); w.grid.overlay.paint(q, w.book.sheet(mp), r1, c1, w.grid.cell_rect(r1, c1))
+assert q.fills == 0
+rp.set_view("split")
+print("OK day/night")
