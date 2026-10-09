@@ -786,6 +786,7 @@ class MainWindow(QMainWindow):
         self.grid.contextRequested.connect(self.grid_menu)
         self.grid.cellHovered.connect(self.on_hover)
         self.grid.colorPicked.connect(self.pick_fill_from)
+        self.grid.deleteRequested.connect(lambda kind: self.delete_rows() if kind == "rows" else self.delete_cols())
         self.squares = None
         self.card = HoverCard(self)
         self.card_timer_show = QTimer(self)
@@ -2366,6 +2367,8 @@ class MainWindow(QMainWindow):
         self.book.delete(ws, "row", r1, r2 - r1 + 1)
         self.book.done("structure")
         self.grid.set_current(r1, c1)
+        what = f"row {r1}" if r1 == r2 else f"rows {r1}–{r2}"
+        self.statusBar().showMessage(f"Deleted {what}. Ctrl+Z brings it back.", 6000)
 
     def delete_cols(self):
         ws = self.current_ws()
@@ -2376,6 +2379,8 @@ class MainWindow(QMainWindow):
         self.book.delete(ws, "col", c1, c2 - c1 + 1)
         self.book.done("structure")
         self.grid.set_current(r1, c1)
+        what = f"column {fx.num_to_col(c1)}" if c1 == c2 else f"columns {fx.num_to_col(c1)}–{fx.num_to_col(c2)}"
+        self.statusBar().showMessage(f"Deleted {what}. Ctrl+Z brings it back.", 6000)
 
     # ------------------------------------------------------------ links
     SQUARE_RE = re.compile(r"\s*([A-Za-z]{1,2})(\d{1,3})(?![\d])")

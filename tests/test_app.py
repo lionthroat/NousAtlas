@@ -409,3 +409,23 @@ assert any(r[0] == "South track" and r[6] == "path" for r in wb["Ranges"].iter_r
 w.close_book(); w.open_path(path)
 assert w.book.ranges.get("South track").style == "path"
 print("OK terrain/path/dropper")
+
+# ---- Delete on whole rows / columns deletes them; on cells it clears
+w.open_sheet("Flora"); g = w.grid; fl = w.book.sheet("Flora")
+a3, a4 = fl["A3"].value, fl["A4"].value
+y = g.y_of(3) + 3
+QTest.mouseClick(g.viewport(), Qt.LeftButton, Qt.NoModifier, QPoint(g.header_w // 2, y))   # row header
+assert g.sel_kind == "rows"
+QTest.keyClick(g, Qt.Key_Delete)
+assert fl["A3"].value == a4, (fl["A3"].value, a4)
+w.undo(); assert fl["A3"].value == a3
+g.set_current(3, 2); QTest.keyClick(g, Qt.Key_Space, Qt.ControlModifier)
+assert g.sel_kind == "cols"
+b1 = fl["C3"].value
+QTest.keyClick(g, Qt.Key_Delete); assert fl["B3"].value == b1
+w.undo()
+g.select_range(3, 1, 3, fl.max_column)          # dragged across cells: only clears
+QTest.keyClick(g, Qt.Key_Delete)
+assert fl["A3"].value is None and fl["A4"].value == a4
+w.undo(); assert fl["A3"].value == a3
+print("OK delete")

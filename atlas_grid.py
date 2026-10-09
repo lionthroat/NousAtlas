@@ -87,6 +87,7 @@ class SheetView(QAbstractScrollArea):
     contextRequested = Signal(object)  # a QMenu to add to before it pops up
     cellHovered = Signal(int, int, object)   # row, col, global position (0s = off the cells)
     colorPicked = Signal(int, int)           # Alt+click: pick up this cell's fill
+    deleteRequested = Signal(str)            # Delete key on whole rows ("rows") or columns ("cols")
 
     def __init__(self, theme):
         super().__init__()
@@ -116,6 +117,7 @@ class SheetView(QAbstractScrollArea):
         self._region = QRect()
         self.pad_x, self.pad_y, self.gap = PAD_X, PAD_Y, 0
         self.ring_selection = False      # set on map sheets
+        self.sel_kind = None             # "rows" / "cols" when picked by header (or Shift/Ctrl+Space)
         self.beacon = None
         self.beacon_phase = None
         self.ox = self.oy = 0
@@ -917,6 +919,8 @@ class SheetView(QAbstractScrollArea):
 
     # ------------------------------------------------------------ selection & keys
     def set_current(self, r, c, extend=False):
+        if not extend:
+            self.sel_kind = None
         r, c = max(1, r), max(1, c)
         if (r, c) in self._covered:
             r, c = self._covered[(r, c)]
@@ -929,6 +933,7 @@ class SheetView(QAbstractScrollArea):
         self.currentChanged.emit()
 
     def select_range(self, r1, c1, r2, c2):
+        self.sel_kind = None
         self.anchor, self.cur = (r1, c1), (r2, c2)
         self.ensure_visible(r2, c2)
         self.viewport().update()
@@ -1003,9 +1008,22 @@ class SheetView(QAbstractScrollArea):
         if k == Qt.Key_Escape and self.tool is not None and self.tool.active():
             self.tool.stop()
             return
+        if k == Qt.Key_Space and (shift or ctrl) and not (shift and ctrl):
+            r1, c1, r2, c2 = self.selection()
+            if shift:
+                self.anchor, self.cur = (r1, 1), (r2, max(1, self.ws.max_column))
+                self.sel_kind = "rows"
+            else:
+                self.anchor, self.cur = (1, c1), (max(1, self.ws.max_row), c2)
+                self.sel_kind = "cols"
+            self.viewport().update()
+            self.currentChanged.emit()
+            return
         if k in (Qt.Key_Delete, Qt.Key_Backspace) and not ctrl:
             if k == Qt.Key_Backspace:
                 self.start_edit("")
+            elif self.sel_kind in ("rows", "cols"):
+                self.deleteRequested.emit(self.sel_kind)
             else:
                 self.clear_contents()
             return
@@ -1087,6 +1105,7 @@ class SheetView(QAbstractScrollArea):
                 self.cur = (self.nrows - EXTRA_ROWS, col)
             else:
                 self.anchor, self.cur = (1, col), (max(1, self.ws.max_row), col)
+            self.sel_kind = "cols"
             self._drag = ("cols", col)
             self.viewport().update()
             self.currentChanged.emit()
@@ -1097,6 +1116,7 @@ class SheetView(QAbstractScrollArea):
                 self.cur = (row, max(1, self.ws.max_column))
             else:
                 self.anchor, self.cur = (row, 1), (row, max(1, self.ws.max_column))
+            self.sel_kind = "rows"
             self._drag = ("rows", row)
             self.viewport().update()
             self.currentChanged.emit()
