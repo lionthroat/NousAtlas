@@ -14,7 +14,8 @@ import re
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygon
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QFrame,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QComboBox, QFrame,
+                               QTableWidget, QTableWidgetItem,
                                QHBoxLayout, QInputDialog, QLabel, QListWidget,
                                QListWidgetItem, QMenu, QMessageBox, QPushButton,
                                QToolButton, QVBoxLayout, QWidget)
@@ -514,7 +515,8 @@ class RangesPanel(QWidget):
         lbl.setObjectName("faint")
         b.addWidget(lbl)
         self.list = QListWidget()
-        self.list.setMinimumHeight(120)
+        self.list.setMinimumHeight(90)
+        self.list.setMaximumHeight(170)
         self.list.itemChanged.connect(self.item_changed)
         self.list.currentItemChanged.connect(self.current_layer_changed)
         self.list.itemDoubleClicked.connect(self.solo_toggle)
@@ -559,11 +561,35 @@ class RangesPanel(QWidget):
         lbl = QLabel("Here")
         lbl.setObjectName("faint")
         b.addWidget(lbl)
-        self.here = QLabel()
-        self.here.setWordWrap(True)
-        self.here.setTextFormat(Qt.RichText)
-        self.here.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        b.addWidget(self.here)
+        self.here_title = QLabel()
+        self.here_title.setWordWrap(True)
+        self.here_title.setTextFormat(Qt.RichText)
+        b.addWidget(self.here_title)
+        self.here_table = QTableWidget(0, 8)
+        self.here_table.setHorizontalHeaderLabels([""] + [f"{blk:02d}" for blk in BLOCKS] + ["All"])
+        self.here_table.verticalHeader().hide()
+        self.here_table.setShowGrid(True)
+        self.here_table.setSelectionMode(QTableWidget.NoSelection)
+        self.here_table.setFocusPolicy(Qt.NoFocus)
+        self.here_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.here_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.here_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        hh = self.here_table.horizontalHeader()
+        for i in range(1, 8):
+            self.here_table.setColumnWidth(i, 30 if i < 7 else 34)
+        hh.setStretchLastSection(False)
+        self.here_table.verticalHeader().setDefaultSectionSize(24)
+        self.here_table.cellClicked.connect(self.here_clicked)
+        b.addWidget(self.here_table)
+        self.here_legend = QLabel()
+        self.here_legend.setTextFormat(Qt.RichText)
+        self.here_legend.setObjectName("faint")
+        b.addWidget(self.here_legend)
+        self.here_add = QComboBox()
+        self.here_add.activated.connect(self.here_add_chosen)
+        b.addWidget(self.here_add)
+        self.here_sq = None
+        self.here_layers = []
         lay.addWidget(self.body, 1)
         lay.addStretch()
         self.refresh()
@@ -644,32 +670,116 @@ class RangesPanel(QWidget):
             self.paint_note.setText("Turn on Paint, then click or drag over squares.")
 
     def update_here(self):
+        """The square editor: every layer on the selected square, by time.
+        Click a slot to cycle common > uncommon > rare > none; the All column
+        sets the whole row."""
         w = self.window
         ws = w.current_ws()
         if ws is None or w.book is None or ws.title not in w.book.meta["maps"]:
             return
         info = w.book.meta["maps"][ws.title]
         sq = map_square(info, *w.grid.cur)
+        self.here_sq = (ws.title, sq) if sq else None
+        t = w.theme
+        tbl = self.here_table
+        tbl.blockSignals(True)
         if sq is None:
-            self.here.setText("<span style='color:gray'>Select a map square to see who's there.</span>")
+            self.here_title.setText("Select a map square to see and edit what's there.")
+            tbl.setRowCount(0)
+            tbl.hide()
+            self.here_add.hide()
+            self.here_legend.hide()
+            tbl.blockSignals(False)
             return
         rows = w.book.ranges.who(ws.title, sq)
-        t = w.theme
-        head = "".join(f"<td align='center' style='color:{t['faint']}; padding:0 3px'>{b:02d}</td>" for b in BLOCKS)
-        html = [f"<b>{square_label(sq)}</b>"]
-        if not rows:
-            html.append(f"<br><span style='color:{t['muted']}'>Nothing's painted here.</span>")
+        self.here_title.setText(f"<b>{square_label(sq)}</b> <span style='color:{t['muted']}'>· click a time to change it"
+                                f"</span>" if rows else
+                                f"<b>{square_label(sq)}</b> <span style='color:{t['muted']}'>· no layers here yet</span>")
+        tbl.setRowCount(len(rows))
+        self.here_layers = [layer.name for layer, _ in rows]
+        for i, (layer, levels) in enumerate(rows):
+            name = QTableWidgetItem(swatch(layer.color), layer.name)
+            name.setFlags(Qt.ItemIsEnabled)
+            name.setToolTip(layer.name)
+            tbl.setItem(i, 0, name)
+            for j, b in enumerate(BLOCKS):
+                lv = levels[b]
+                # filled like the map: solid common, medium uncommon, faint rare, empty none
+                it = QTableWidgetItem("" if lv else "–")
+                it.setTextAlignment(Qt.AlignCenter)
+                it.setForeground(QColor(t["faint"]))
+                if lv:
+                    it.setBackground(qcolor(layer.color, ALPHA[lv]))
+                it.setFlags(Qt.ItemIsEnabled)
+                it.setToolTip(f"{layer.name} at {block_label(b)}: {LEVELS.get(lv, 'not here')}. Click to change.")
+                tbl.setItem(i, 1 + j, it)
+            top = max(levels.values())
+            all_it = QTableWidgetItem("all")
+            all_it.setTextAlignment(Qt.AlignCenter)
+            all_it.setForeground(QColor(t["muted"]))
+            all_it.setFlags(Qt.ItemIsEnabled)
+            all_it.setToolTip("Set every time at once (cycles common > uncommon > rare > none)")
+            tbl.setItem(i, 7, all_it)
+        tbl.resizeColumnToContents(0)
+        tbl.setColumnWidth(0, min(150, max(80, tbl.columnWidth(0))))
+        tbl.setFixedHeight(tbl.horizontalHeader().height() + sum(tbl.rowHeight(i) for i in range(len(rows))) + 4)
+        tbl.setVisible(bool(rows))
+        tbl.setStyleSheet(f"QTableWidget {{ gridline-color: {t['panel']}; background: {t['window']}; }}")
+        def chip(alpha):
+            c = qcolor(t["accent"].lstrip("#"), alpha)
+            return (f"<span style='background-color: rgba({c.red()},{c.green()},{c.blue()},{alpha / 255:.2f})'>"
+                    "&nbsp;&nbsp;&nbsp;&nbsp;</span>")
+        self.here_legend.setText(f"{chip(ALPHA[3])} common &nbsp; {chip(ALPHA[2])} uncommon &nbsp; "
+                                 f"{chip(ALPHA[1])} rare &nbsp; – not here")
+        self.here_legend.setVisible(bool(rows))
+        # add another layer to this square
+        others = [l.name for l in w.book.ranges.layers if l.name not in self.here_layers]
+        self.here_add.blockSignals(True)
+        self.here_add.clear()
+        self.here_add.addItem("Add a layer to this square…", None)
+        for n in others:
+            layer = w.book.ranges.get(n)
+            self.here_add.addItem(swatch(layer.color), n, n)
+        self.here_add.addItem("New layer…", "__new__")
+        self.here_add.blockSignals(False)
+        self.here_add.show()
+        tbl.blockSignals(False)
+
+    def here_clicked(self, row, col):
+        if self.here_sq is None or col == 0 or row >= len(self.here_layers):
+            return
+        w = self.window
+        map_title, sq = self.here_sq
+        layer = w.book.ranges.get(self.here_layers[row])
+        if layer is None:
+            return
+        nxt = {3: 2, 2: 1, 1: 0, 0: 3}
+        if col == 7:
+            top = max(layer.level(map_title, b, sq) for b in BLOCKS)
+            blocks, level = set(BLOCKS), nxt[top] if top else 3
         else:
-            html.append(f"<table cellspacing='0' cellpadding='1'><tr><td></td>{head}</tr>")
-            for layer, levels in rows:
-                cells = ""
-                for b in BLOCKS:
-                    lv = levels[b]
-                    mark = {3: "●", 2: "◐", 1: "·"}.get(lv, "")
-                    cells += f"<td align='center' style='color:#{layer.color}; padding:0 3px'>{mark}</td>"
-                html.append(f"<tr><td style='color:#{layer.color}; padding-right:6px'>{_esc(layer.name)}</td>{cells}</tr>")
-            html.append(f"</table><span style='color:{t['faint']}'>● common  ◐ uncommon  · rare</span>")
-        self.here.setText("".join(html))
+            b = BLOCKS[col - 1]
+            blocks, level = {b}, nxt[layer.level(map_title, b, sq)]
+        w.book.begin([])
+        w.book.ranges.paint(layer, map_title, blocks, [sq], level)
+        w.book.done("ranges")
+
+    def here_add_chosen(self, idx):
+        data = self.here_add.itemData(idx)
+        if not data or self.here_sq is None:
+            return
+        w = self.window
+        map_title, sq = self.here_sq
+        if data == "__new__":
+            layer = self.new_layer()
+            if layer is None:
+                self.update_here()
+                return
+        else:
+            layer = w.book.ranges.get(data)
+        w.book.begin([])
+        w.book.ranges.paint(layer, map_title, self.st.blocks, [sq], self.st.level or 3)
+        w.book.done("ranges")
 
     # -- handlers
     def blocks_clicked(self):

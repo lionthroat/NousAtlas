@@ -351,3 +351,29 @@ assert w.layers_showing() and w.layers_btn.isChecked()
 w.layers_btn.click(); assert not w.layers_showing()
 w.undo(); assert w.book.ranges.get("Dust devils") is None
 print("OK ctrl+l")
+
+# ---- Here table: edit what's on a square, by time, without repainting
+w.open_sheet(mp); w.right.setCurrentIndex(1)
+jays = w.book.ranges.get("Tally jay")
+rj, cj = R.square_cell(info, (7, 6)); w.grid.set_current(rj, cj); app.processEvents()
+p = w.ranges_panel
+assert "Tally jay" in p.here_layers, p.here_layers
+row = p.here_layers.index("Tally jay")
+col20 = 1 + R.BLOCKS.index(20)
+assert jays.level(mp, 20, (7, 6)) == 0
+p.here_table.cellClicked.emit(row, col20); assert jays.level(mp, 20, (7, 6)) == 3      # none -> common
+row = p.here_layers.index("Tally jay")
+p.here_table.cellClicked.emit(row, col20); assert jays.level(mp, 20, (7, 6)) == 2      # -> uncommon
+row = p.here_layers.index("Tally jay")
+p.here_table.cellClicked.emit(row, 7)                                                    # All: common -> uncommon everywhere
+assert all(jays.level(mp, b, (7, 6)) == 2 for b in R.BLOCKS)
+w.undo(); assert w.book.ranges.get("Tally jay").level(mp, 8, (7, 6)) == 3 and w.book.ranges.get("Tally jay").level(mp, 20, (7, 6)) == 2
+# add another layer to this square from the dropdown (uses the Time/Paint settings)
+p.set_blocks(R.NIGHT); w.range_state.level = 1
+idx = p.here_add.findData("Chimney Bats")
+if idx < 0:
+    w.book.ranges.add("Chimney Bats"); p.update_here(); idx = p.here_add.findData("Chimney Bats")
+p.here_add.activated.emit(idx)
+bats = w.book.ranges.get("Chimney Bats")
+assert bats.level(mp, 0, (7, 6)) in (1, 3) and "Chimney Bats" in p.here_layers
+print("OK here table")
