@@ -235,7 +235,7 @@ assert w.font_box.minimumWidth() >= 200
 print("OK freeze")
 
 # ---- editing a cell whose text spills: the editor shows all of it
-from PySide6.QtWidgets import QMenu
+from PySide6.QtWidgets import QMenu, QToolButton
 w.open_sheet("Gazetteer"); g = w.grid
 g.set_current(1, 1); g.start_edit(); app.processEvents()
 assert g.editor.toPlainText().startswith("GAZETTEER")
@@ -429,3 +429,23 @@ QTest.keyClick(g, Qt.Key_Delete)
 assert fl["A3"].value is None and fl["A4"].value == a4
 w.undo(); assert fl["A3"].value == a3
 print("OK delete")
+
+# ---- dropper picks "no fill"; size steppers; top border; border colour recolours
+import atlas_dialogs as Dg
+w.open_sheet("Flora"); g = w.grid; fl = w.book.sheet("Flora")
+w.pick_fill_from(30, 30)                       # an empty cell: no fill
+assert w.last_fill_color == ""
+fl["B4"].fill = M.PatternFill("solid", fgColor="FFC0604A")
+g.set_current(4, 2); w.fill_color_btn.click()
+assert not fl["B4"].fill.fill_type, fl["B4"].fill.fill_type
+size = fl["B4"].font.sz or 11
+w.step_font_size(1); assert fl["B4"].font.sz == round(size) + 1
+w.step_font_size(-1); w.step_font_size(-1); assert fl["B4"].font.sz == round(size) - 1
+g.select_range(4, 1, 5, 3); w.apply_borders("top")
+assert fl["A4"].border.top.style == "thin" and fl["A5"].border.top is None or not fl["A5"].border.top.style
+Dg.ColorPicker.get = staticmethod(lambda *a, **k: "88C0D0")
+w.choose_border_color()
+assert fl["B4"].border.top.color.rgb.endswith("88C0D0"), fl["B4"].border.top.color
+assert w.toolbar.findChildren(QToolButton) and w.spacing_btn.isVisibleTo(w)
+assert w.a_clear_fmt not in w.toolbar.actions()
+print("OK toolbar")

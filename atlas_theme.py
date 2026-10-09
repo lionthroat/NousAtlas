@@ -54,7 +54,9 @@ def stylesheet(t):
     QComboBox, QFontComboBox {{ background: {t['panel2']}; border: 1px solid {t['border']}; border-radius: 5px; padding: 2px 6px; }}
     QComboBox QAbstractItemView {{ background: {t['panel']}; selection-background-color: {t['select']}; border: 1px solid {t['border']}; }}
     QTreeWidget, QListWidget, QTableWidget {{ background: {t['panel']}; border: none; outline: none; }}
-    QTreeWidget::item, QListWidget::item {{ padding: 3px 2px; border-radius: 4px; }}
+    QTreeView {{ show-decoration-selected: 1; }}
+    QListWidget::item {{ padding: 3px 2px; border-radius: 4px; }}
+    QTreeWidget::item {{ padding: 3px 2px; border-radius: 0; }}
     QTreeWidget::item:selected, QListWidget::item:selected {{ background: {t['select']}; color: {t['text']}; }}
     QTreeWidget::item:hover, QListWidget::item:hover {{ background: {t['panel2']}; }}
     QHeaderView::section {{ background: {t['panel']}; color: {t['muted']}; border: none; padding: 3px; }}

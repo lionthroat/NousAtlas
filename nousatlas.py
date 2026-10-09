@@ -13,7 +13,7 @@ import sys
 
 from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices,
-                           QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPen, QPixmap)
+                           QFont, QFontDatabase, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QFileDialog, QFontComboBox, QFrame,
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -115,6 +115,17 @@ def draw_icon(kind, color="#d8dee9", accent=None):
         p.fillRect(3, 15, 14, 4, qcolor(accent) if accent else Qt.transparent)
         if not accent:
             p.drawRect(3, 15, 14, 3)
+    elif kind == "bordercolor":
+        p.setPen(QPen(QColor(color), 1.2, Qt.DotLine))
+        p.drawRect(3, 2, 14, 11)
+        p.setPen(Qt.NoPen)
+        p.fillRect(3, 15, 14, 4, qcolor(accent) if accent else QColor(color))
+    elif kind == "spacing":
+        p.setPen(QPen(QColor(color), 1.2))
+        for x, y in ((3, 3), (11, 3), (3, 11), (11, 11)):
+            p.drawRect(x, y, 6, 6)
+        p.setPen(QPen(QColor(color), 1, Qt.DotLine))
+        p.drawRect(1, 1, 18, 18)
     elif kind == "clear":
         p.drawLine(4, 16, 16, 4)
         f = QFont("Arial")
@@ -147,6 +158,8 @@ class FontBox(QComboBox):
         self.setMaxVisibleItems(24)
         self.view().setMinimumWidth(300)
         self.view().setTextElideMode(Qt.ElideNone)
+        # every row the same height: Qt then doesn't measure 300+ fonts one by one
+        self.view().setUniformItemSizes(True)
         self.families = sorted(set(QFontDatabase.families()), key=str.lower)
         self._filled_for = None
         self.lineEdit().returnPressed.connect(self._typed)
@@ -190,6 +203,19 @@ class FontBox(QComboBox):
         self.setEditText(text)
         self.blockSignals(False)
         self._filled_for = used
+
+    def prewarm(self):
+        """Fill the list and load the fonts a few at a time while the app is
+        idle, so the first open is instant."""
+        self.fill()
+        names = list(self.families)
+        def step():
+            for _ in range(12):
+                if not names:
+                    return
+                QFontMetrics(QFont(names.pop())).horizontalAdvance("Ag")
+            QTimer.singleShot(15, step)
+        QTimer.singleShot(15, step)
 
     def showPopup(self):
         self.fill()
@@ -893,6 +919,10 @@ class MainWindow(QMainWindow):
         self.a_italic = self.act("Italic", lambda: self.toggle_font("i"), QKeySequence.Italic, True)
         self.a_under = self.act("Underline", lambda: self.toggle_font("u"), QKeySequence.Underline, True)
         self.a_strike = self.act("Strikethrough", lambda: self.toggle_font("strike"), "Ctrl+5", True)
+        self.a_bigger = self.act("Bigger text", lambda: self.step_font_size(1), "Ctrl+Shift+>")
+        self.a_smaller = self.act("Smaller text", lambda: self.step_font_size(-1), "Ctrl+Shift+<")
+        self.addAction(self.a_bigger)
+        self.addAction(self.a_smaller)
         self.a_wrap = self.act("Wrap text", self.toggle_wrap, None, True)
         self.a_merge = self.act("Merge and center", self.toggle_merge, None, True)
         self.a_clear_fmt = self.act("Clear formatting", self.clear_formatting)
@@ -929,6 +959,17 @@ class MainWindow(QMainWindow):
         self.size_box.lineEdit().returnPressed.connect(self.size_entered)
         self.size_box.activated.connect(lambda i: self.size_entered())
         tb.addWidget(self.size_box)
+        for label, step, tip in (("▲", 1, "Bigger text (Ctrl+Shift+>)"), ("▼", -1, "Smaller text (Ctrl+Shift+<)")):
+            b = QToolButton()
+            b.setText(label)
+            b.setToolTip(tip)
+            b.setAutoRepeat(True)
+            b.setFixedWidth(22)
+            f = b.font()
+            f.setPointSizeF(max(7.0, f.pointSizeF() - 1))
+            b.setFont(f)
+            b.clicked.connect(lambda _=False, s=step: self.step_font_size(s))
+            tb.addWidget(b)
         tb.addSeparator()
         for a, label in ((self.a_bold, "B"), (self.a_italic, "I"), (self.a_under, "U"), (self.a_strike, "S")):
             a.setIconText(label)
@@ -954,7 +995,7 @@ class MainWindow(QMainWindow):
         self.fill_color_btn = QToolButton()
         self.fill_color_btn.setToolTip("Fill colour (click the arrow to choose)")
         self.fill_color_btn.setPopupMode(QToolButton.MenuButtonPopup)
-        self.fill_color_btn.clicked.connect(lambda: self.apply_fill(self.last_fill_color))
+        self.fill_color_btn.clicked.connect(lambda: self.apply_fill(self.last_fill_color or None))
         m2 = QMenu(self)
         m2.aboutToShow.connect(lambda: (m2.close(), QTimer.singleShot(0, self.choose_fill_color)))
         self.fill_color_btn.setMenu(m2)
@@ -975,19 +1016,32 @@ class MainWindow(QMainWindow):
         bm = QMenu(self)
         bm.addAction("All borders", lambda: self.apply_borders("all"))
         bm.addAction("Outside border", lambda: self.apply_borders("outside"))
+        bm.addSeparator()
+        bm.addAction("Top border", lambda: self.apply_borders("top"))
         bm.addAction("Bottom border", lambda: self.apply_borders("bottom"))
+        bm.addAction("Left border", lambda: self.apply_borders("left"))
+        bm.addAction("Right border", lambda: self.apply_borders("right"))
+        bm.addSeparator()
         bm.addAction("No borders", lambda: self.apply_borders("none"))
         bm.addSeparator()
         bm.addAction("Border colour…", self.choose_border_color)
         self.border_btn.setMenu(bm)
         tb.addWidget(self.border_btn)
+        self.border_color_btn = QToolButton()
+        self.border_color_btn.setToolTip("Border colour: new borders use it, and choosing one recolours the borders "
+                                         "already on the selected cells")
+        self.border_color_btn.clicked.connect(self.choose_border_color)
+        tb.addWidget(self.border_color_btn)
         tb.addSeparator()
         self.style_box = QComboBox()
         self.style_box.setMinimumWidth(150)
         self.style_box.setToolTip("Cell styles")
         self.style_box.activated.connect(self.style_chosen)
         tb.addWidget(self.style_box)
-        tb.addAction(self.a_clear_fmt)
+        self.spacing_btn = QToolButton()
+        self.spacing_btn.setToolTip("Margins and spacing for this sheet")
+        self.spacing_btn.clicked.connect(self.edit_sheet_layout)
+        tb.addWidget(self.spacing_btn)
         spacer = QWidget()
         spacer.setStyleSheet("background: transparent;")
         spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding, spacer.sizePolicy().verticalPolicy())
@@ -1102,7 +1156,7 @@ class MainWindow(QMainWindow):
             fm.addAction(a)
         fm.addAction(self.act("Text colour…", self.choose_text_color))
         fm.addAction(self.act("Fill colour…", self.choose_fill_color))
-        fm.addAction(self.act("Apply the picked fill", lambda: self.apply_fill(self.last_fill_color), "Ctrl+Shift+F",
+        fm.addAction(self.act("Apply the picked fill", lambda: self.apply_fill(self.last_fill_color or None), "Ctrl+Shift+F",
                               tip="Alt+click a cell to pick up its fill, then select cells and press Ctrl+Shift+F"))
         fm.addAction(self.a_clear_fmt)
         fm.addSeparator()
@@ -1136,6 +1190,7 @@ class MainWindow(QMainWindow):
         self.a_merge.setIcon(draw_icon("merge", t["text"]))
         self.a_clear_fmt.setIcon(draw_icon("clear", t["text"]))
         self.border_btn.setIcon(draw_icon("borders", t["text"]))
+        self.spacing_btn.setIcon(draw_icon("spacing", t["text"]))
         self.update_color_buttons()
         if self.book is not None:
             self.rebuild_sidebar()
@@ -1145,7 +1200,8 @@ class MainWindow(QMainWindow):
     def update_color_buttons(self):
         t = self.theme
         self.text_color_btn.setIcon(draw_icon("text", t["text"], self.last_text_color))
-        self.fill_color_btn.setIcon(draw_icon("fill", t["text"], self.last_fill_color))
+        self.fill_color_btn.setIcon(draw_icon("fill", t["text"], self.last_fill_color or None))
+        self.border_color_btn.setIcon(draw_icon("bordercolor", t["text"], getattr(self, "border_color", None)))
 
     def set_theme(self, name):
         self.theme_name = name
@@ -1206,6 +1262,7 @@ class MainWindow(QMainWindow):
         self.update_title()
         self.update_enabled()
         self.update_style_box()
+        QTimer.singleShot(600, self.font_box.prewarm)
 
     def prepare_meta(self, book):
         """First time a workbook comes into Atlas: find map grids and put the
@@ -1996,6 +2053,18 @@ class MainWindow(QMainWindow):
         self.format_cells(lambda c: model.set_font(c, **kw))
         self.grid.setFocus()
 
+    def step_font_size(self, step):
+        """Each selected cell's text one point bigger or smaller."""
+        if self.book is None:
+            return
+        def fn(cell):
+            size = (cell.font.sz if cell.font is not None and cell.font.sz else None) or 11
+            model.set_font(cell, sz=max(1.0, min(409.0, float(round(size)) + step)))
+        self.format_cells(fn)
+        cell = self.current_cell()
+        if cell is not None and cell.font is not None and cell.font.sz:
+            self.size_box.setEditText(f"{cell.font.sz:g}")
+
     def size_entered(self):
         if self._syncing:
             return
@@ -2086,7 +2155,10 @@ class MainWindow(QMainWindow):
         hexv = (model.resolve_color(cell.fill.fgColor, self.book.theme)
                 if cell is not None and cell.has_style and cell.fill and cell.fill.fill_type else None)
         if not hexv:
-            self.statusBar().showMessage("That cell has no fill to pick up.", 4000)
+            self.last_fill_color = ""        # "no fill": the sheet's own background
+            self.update_color_buttons()
+            self.statusBar().showMessage("Picked no fill (the sheet's background). Select cells, then click the fill "
+                                         "button or press Ctrl+Shift+F to clear their fill.", 8000)
             return
         self.last_fill_color = hexv
         self.update_color_buttons()
@@ -2100,6 +2172,7 @@ class MainWindow(QMainWindow):
         if hex6:
             self.last_fill_color = hex6
             self.update_color_buttons()
+        hex6 = hex6 or None
         ws = self.current_ws()
         if ws is None or self.read_only_sheet(ws):
             return
@@ -2128,12 +2201,43 @@ class MainWindow(QMainWindow):
                                   (color or True) if r == r1 else None, (color or True) if r == r2 else None)
             elif kind == "bottom" and r == r2:
                 model.set_borders(cell, bottom=color or True)
+            elif kind == "top" and r == r1:
+                model.set_borders(cell, top=color or True)
+            elif kind == "left" and c == c1:
+                model.set_borders(cell, left=color or True)
+            elif kind == "right" and c == c2:
+                model.set_borders(cell, right=color or True)
         self.book.done("format")
 
     def choose_border_color(self):
+        if self.book is None:
+            return
         hex6 = ColorPicker.get(self, self.book, getattr(self, "border_color", None), "Border colour")
-        if hex6 is not None:
-            self.border_color = hex6 or None
+        if hex6 is None:
+            return
+        self.border_color = hex6 or None
+        self.update_color_buttons()
+        # recolour the borders already on the selection
+        ws = self.current_ws()
+        if ws is None or self.read_only_sheet(ws):
+            return
+        r1, c1, r2, c2 = self.grid.selection()
+        cells = [cell for cell in self.book.cells_in(ws, r1, c1, r2, c2, create=False)
+                 if cell.border is not None and any(getattr(cell.border, s) is not None and getattr(cell.border, s).style
+                                                    for s in ("left", "right", "top", "bottom"))]
+        if not cells:
+            return
+        from openpyxl.styles import Border, Side
+        color = ("FF" + self.border_color) if self.border_color else None
+        self.book.begin([ws])
+        for cell in cells:
+            sides = {}
+            for s in ("left", "right", "top", "bottom"):
+                cur = getattr(cell.border, s)
+                sides[s] = Side(style=cur.style, color=color) if cur is not None and cur.style else Side()
+            cell.border = Border(**sides)
+        self.book.done("format")
+        self.statusBar().showMessage(f"Recoloured borders on {len(cells)} cells.", 4000)
 
     def pick_color(self, current, title):
         hex6 = ColorPicker.get(self, self.book, current, title, allow_none=False)
