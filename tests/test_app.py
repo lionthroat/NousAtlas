@@ -341,7 +341,7 @@ QTest.keyClick(w.grid, Qt.Key_Escape)
 assert not w.range_state.painting and not w.paint_bar.isVisibleTo(w)
 w.ranges_panel.paint_btn.setChecked(True); assert w.range_state.painting and w.paint_bar.isVisibleTo(w)
 w.hide_layers()
-assert not w.range_state.painting and not w.layers_showing()
+assert not w.range_state.painting and w.layers_showing()   # folding the palette keeps layers on the map
 w.ranges_panel.paint_btn.setChecked(False)
 w._note_dialog = lambda *a: "The Tally Post: a pillar with a dish."
 info = w.book.meta["maps"][mp]
@@ -367,7 +367,7 @@ QTest.keyClick(w, Qt.Key_L, Qt.ControlModifier)
 dd = w.book.ranges.get("Dust devils")
 assert dd is not None and dd.level(mp, 12, (3, 3)) == 3 and dd.level(mp, 12, (2, 2)) == 3
 assert w.layers_showing() and w.layers_btn.isChecked()
-w.layers_btn.click(); assert not w.layers_showing()
+w.layers_btn.click(); assert w.layers_showing() and not w.layers_btn.isChecked()
 w.undo(); assert w.book.ranges.get("Dust devils") is None
 QInputDialog.getText = _getText
 print("OK ctrl+l")
@@ -474,9 +474,9 @@ print("OK toolbar")
 w.open_sheet(mp)
 w.hide_layers()
 w.set_panel(False); app.processEvents()
-assert not w.panel_open() and not w.layers_showing()
+assert not w.panel_open()
 w.layers_btn.click(); app.processEvents()
-assert w.panel_open() and w.layers_showing()
+assert w.panel_open() and w.layers_section.expanded()
 assert w.right.width() >= w.ranges_panel.minimumSizeHint().width(), (w.right.width(), w.ranges_panel.minimumSizeHint().width())
 w.layers_btn.click(); app.processEvents()
 assert not w.panel_open()        # it was shut before, so it shuts again
@@ -563,9 +563,9 @@ print("OK timeless paths")
 
 # ---- the five from the panic-quit: layers remembered, cancel makes nothing, grouped list, one panel, gentle delete
 import nousatlas as NA
-w.show_layers_tab(); assert w.settings.value("layers_on") == "true"
+w.set_layers_on(True); assert w.settings.value("layers_on") == "true"
 w2 = NA.MainWindow(); assert w2.layers_on; w2.close()
-w.hide_layers(); assert w.settings.value("layers_on") == "false"
+w.set_layers_on(False); assert w.settings.value("layers_on") == "false"; assert not w.layers_showing(); w.set_layers_on(True)
 # cancel when choosing the map: nothing is made, we stay put
 before = [l.name for l in w.book.ranges.layers]
 w.open_sheet("Fauna"); w.grid.set_current(6, 1)
@@ -712,3 +712,29 @@ assert w.book.ranges.get("Rect test").present(mp, (10, 14))         # freehand p
 QTest.mouseRelease(vp, Qt.LeftButton, Qt.NoModifier, vp_center((10, 14)))
 rp.paint_btn.setChecked(False); rp.set_shape("rect")
 print("OK rectangles")
+
+# ---- eyes show / hide; the master eye; the Brush palette and button; Into
+rp = w.ranges_panel
+w.open_sheet(mp); w.show_layers_tab(); rp.refresh()
+row_items = [rp.list.item(i) for i in range(rp.list.count()) if rp.list.item(i).data(Qt.UserRole) == "Rect test"]
+eye = rp.list.itemWidget(row_items[0]).findChild(QToolButton)
+r10 = R.square_cell(info, (1, 10))
+pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), *r10, w.grid.cell_rect(*r10)); before = pp.fills
+assert before >= 1
+eye.click(); assert not w.book.ranges.get("Rect test").visible
+pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), *r10, w.grid.cell_rect(*r10)); assert pp.fills < before
+eye.click(); assert w.book.ranges.get("Rect test").visible
+rp.master_eye.click(); assert not w.layers_showing()
+pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), *r10, w.grid.cell_rect(*r10)); assert pp.fills == 0
+rp.master_eye.click(); assert w.layers_showing()
+# the Brush button opens the Brush palette and picks up the brush
+w.stop_painting(quiet=True)
+w.brush_btn.click()
+assert w.range_state.painting and w.brush_section.expanded() and rp.paint_btn.isChecked() and w.brush_btn.isChecked()
+QTest.keyClick(w.grid, Qt.Key_Escape); assert not w.brush_btn.isChecked()
+# Into chooses the layer being painted
+idx = rp.into_box.findData("South track"); rp.into_box.activated.emit(idx)
+assert w.range_state.layer == "South track"
+# on a sheet that isn't a map, the Brush button explains instead
+w.open_sheet("Fauna"); w.brush_btn.click(); assert not w.range_state.painting and not w.brush_btn.isChecked()
+print("OK eyes and brush palette")

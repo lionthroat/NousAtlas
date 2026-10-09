@@ -914,12 +914,15 @@ class MainWindow(QMainWindow):
         hl.setSpacing(0)
         self.cell_section = Section("Cell", self.inspector, "sec_cell", self.settings)
         self.layers_section = Section("Layers", self.ranges_panel, "sec_layers", self.settings)
-        self.layers_section.toggled.connect(lambda on: self.ranges_panel.refresh() if on else None)
+        self.layers_section.toggled.connect(lambda on: (self.ranges_panel.refresh() if on else None,
+                                                         self.sync_pane_buttons()))
+        self.brush_section = Section("Brush", self.ranges_panel.brush_widget, "sec_brush", self.settings)
         hl.addWidget(self.cell_section)
         hl.addWidget(self.layers_section)
+        hl.addWidget(self.brush_section)
         hl.addStretch(1)
         self.right.setWidget(holder)
-        self.layers_on = self.settings.value("layers_on", "false") == "true"
+        self.layers_on = self.settings.value("layers_on", "true") == "true"
 
         self.splitter = QSplitter()
         self.splitter.addWidget(self.sidebar)
@@ -1152,8 +1155,7 @@ class MainWindow(QMainWindow):
         self.layers_btn.setPopupMode(QToolButton.MenuButtonPopup)
         self.layers_btn.setToolTip("Show layers on maps (the Layers tab). The arrow has New layer (Ctrl+L).")
         self.layers_btn.clicked.connect(lambda on: self.show_layers_tab() if on else self.hide_layers())
-        self.layers_btn.setToolTip("Layers on or off: creatures, plants, characters, paths… on the map. "
-                                   "The arrow has New layer (Ctrl+L) and Draw as.")
+        self.layers_btn.setToolTip("Open the Layers palette. The arrow has New layer (Ctrl+L) and Draw as.")
         lm = QMenu(self)
         lm.addAction(self.a_layer_here)
         lm.addAction("Done painting", lambda: self.stop_painting())
@@ -1167,6 +1169,11 @@ class MainWindow(QMainWindow):
         lm.aboutToShow.connect(self.sync_style_menu)
         self.layers_btn.setMenu(lm)
         tb.addWidget(self.layers_btn)
+        self.brush_btn = QToolButton()
+        self.brush_btn.setCheckable(True)
+        self.brush_btn.setToolTip("Brush: paint the selected layer on the map (opens the Brush palette)")
+        self.brush_btn.clicked.connect(self.show_brush)
+        tb.addWidget(self.brush_btn)
         self.row_mode_btn = QToolButton()
         self.row_mode_btn.setCheckable(True)
         self.row_mode_btn.setText("Compact rows")
@@ -1314,6 +1321,7 @@ class MainWindow(QMainWindow):
         self.a_clear_fmt.setIcon(draw_icon("clear", t["text"]))
         self.border_btn.setIcon(draw_icon("borders", t["text"]))
         self.spacing_btn.setIcon(draw_icon("spacing", t["text"]))
+        self.brush_btn.setIcon(ranges.tool_icon("brush", "F28AD6", t["text"].lstrip("#"), 20))
         self.sidebar_btn.setIcon(draw_icon("pane_left", t["text"]))
         self.panel_btn.setIcon(draw_icon("pane_right", t["text"]))
         self.update_color_buttons()
@@ -1726,11 +1734,12 @@ class MainWindow(QMainWindow):
         return bool(self.layers_on)
 
     def set_layers_on(self, on):
+        """The master eye: every layer on the map, shown or hidden."""
         self.layers_on = bool(on)
         self.settings.setValue("layers_on", "true" if on else "false")
         if not on:
             self.stop_painting(quiet=True)
-        self.layers_btn.setChecked(self.layers_on)
+        self.ranges_panel.sync_master()
         self.grid.viewport().update()
 
     def panel_open(self):
@@ -1774,7 +1783,7 @@ class MainWindow(QMainWindow):
             btn.blockSignals(False)
         self.a_panel.setChecked(self.panel_open())
         self.a_sidebar.setChecked(self.splitter.sizes()[0] > 0)
-        self.layers_btn.setChecked(self.layers_showing())
+        self.layers_btn.setChecked(self.panel_open() and self.layers_section.expanded())
 
     def tidy_separators(self):
         """Qt can leave a dock separator behind where the panel's edge used to
@@ -1823,17 +1832,41 @@ class MainWindow(QMainWindow):
             self._panel_auto = True
             self.set_panel(True)
         self.layers_section.expand(True)
-        self.set_layers_on(True)
         self.ranges_panel.refresh()
+        self.sync_pane_buttons()
         self.fit_panel_width()
         QTimer.singleShot(0, self.fit_panel_width)
         QTimer.singleShot(0, lambda: self.right.ensureWidgetVisible(self.layers_section.header))
 
     def hide_layers(self):
-        self.set_layers_on(False)
+        """The Layers button, off: fold the palette away (the layers stay on the map)."""
+        self.stop_painting(quiet=True)
         if self._panel_auto:
             self._panel_auto = False
             self.set_panel(False)
+        else:
+            self.layers_section.expand(False)
+        self.sync_pane_buttons()
+
+    def show_brush(self, on=True):
+        """The Brush toolbar button: open the Brush palette and pick up the brush."""
+        if not on:
+            self.stop_painting(quiet=True)
+            return
+        ws = self.current_ws()
+        if ws is None or self.book is None or ws.title not in self.book.meta["maps"]:
+            self.statusBar().showMessage("The brush works on map sheets.", 5000)
+            self.brush_btn.setChecked(False)
+            return
+        if not self.panel_open():
+            self._panel_auto = True
+            self.set_panel(True)
+        self.brush_section.expand(True)
+        if not self.layers_on:
+            self.set_layers_on(True)
+        self.ranges_panel.refresh()
+        self.ranges_panel.paint_btn.setChecked(True)
+        QTimer.singleShot(0, lambda: self.right.ensureWidgetVisible(self.brush_section))
 
     def sync_style_menu(self):
         layer = self.book.ranges.get(self.range_state.layer) if (self.book and self.range_state.layer) else None
@@ -1941,6 +1974,10 @@ class MainWindow(QMainWindow):
 
     def update_paint_bar(self):
         st = self.range_state
+        if hasattr(self, "brush_btn"):
+            self.brush_btn.blockSignals(True)
+            self.brush_btn.setChecked(bool(st.painting))
+            self.brush_btn.blockSignals(False)
         ws = self.current_ws()
         on = bool(st.painting and st.layer and ws is not None and self.book is not None
                   and ws.title in self.book.meta["maps"] and self.layers_showing())
@@ -2989,6 +3026,11 @@ class MainWindow(QMainWindow):
         st = self.range_state
         st.solo = None
         st.layer = name
+        layer = self.book.ranges.get(name)
+        if layer is not None:
+            layer.visible = True
+        if not self.layers_on:
+            self.set_layers_on(True)
         self.open_sheet(map_title)
         self.show_layers_tab()
         self.ranges_panel.refresh()

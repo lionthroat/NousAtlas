@@ -667,7 +667,7 @@ class Overlay:
             if layer.style == "area":
                 lvs = self._levels(layer, ws.title, sq, parts)
                 if any(lvs):
-                    focus = st.solo or st.all_areas or layer.name == st.layer
+                    focus = st.solo or st.all_areas or not st.painting or layer.name == st.layer
                     areas.append((layer, lvs, 1.0 if focus else FADE))
             elif layer.present(ws.title, sq):
                 (lines if layer.style == "path" else marks).append(layer)
@@ -857,6 +857,22 @@ def tool_icon(kind, fill_hex, line_hex, size=26):
         p.setBrush(qcolor(fill_hex))
         p.drawPolygon(QPolygonF([QPointF(12.0, 11.0), QPointF(15.0, 14.0),        # bristles
                                  QPointF(9.5, 21.5), QPointF(4.0, 22.0), QPointF(4.5, 16.5)]))
+    elif kind in ("eye", "eye_off"):
+        p.setPen(QPen(line, 1.6))
+        p.setBrush(Qt.NoBrush)
+        path = QPolygonF([QPointF(3, 13)] + [QPointF(3 + i, 13 - 7 * (1 - ((i - 10) / 10) ** 2)) for i in range(1, 20)]
+                         + [QPointF(23, 13)] + [QPointF(23 - i, 13 + 7 * (1 - ((i - 10) / 10) ** 2)) for i in range(1, 20)])
+        if kind == "eye":
+            p.drawPolygon(path)
+            p.setBrush(line)
+            p.drawEllipse(QPointF(13, 13), 3.2, 3.2)
+        else:
+            c2 = QColor(line)
+            c2.setAlpha(110)
+            p.setPen(QPen(c2, 1.6))
+            p.drawPolygon(path)
+            p.setPen(QPen(line, 1.8, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(5, 21), QPointF(21, 5))
     elif kind == "rect":
         p.setPen(QPen(line, 1.6, Qt.DashLine))
         p.setBrush(Qt.NoBrush)
@@ -927,13 +943,20 @@ class RangesPanel(QWidget):
         b.setContentsMargins(0, 0, 0, 0)
         b.setSpacing(8)
 
+        # the master switch: every layer on the map, on or off
+        self.master_eye = QToolButton()
+        self.master_eye.setObjectName("eyeBtn")
+        self.master_eye.setCheckable(True)
+        self.master_eye.setAutoRaise(True)
+        self.master_eye.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.master_eye.setIconSize(QSize(18, 18))
+        self.master_eye.toggled.connect(lambda on: self.window.set_layers_on(on))
+        b.addWidget(self.master_eye)
         # the layers
         self.list = QListWidget()
         self.list.setToolTip("Anything with a footprint on the map: creatures, plants, characters, paths, quests.\n"
-                             "Select one to work on it. Tick to show; double-click to show only that one.")
-        self.list.itemChanged.connect(self.item_changed)
+                             "The eye shows or hides a layer. Click a row to select it; right-click for more.")
         self.list.currentItemChanged.connect(self.current_layer_changed)
-        self.list.itemDoubleClicked.connect(self.solo_toggle)
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self.layer_menu)
         b.addWidget(self.list)
@@ -949,15 +972,31 @@ class RangesPanel(QWidget):
             row.addWidget(btn)
         b.addLayout(row)
 
-        # ---- the work box: put squares in the selected layer
+        # ---- the Brush palette (the window puts it in its own section)
+        self.brush_widget = QWidget()
+        bw = QVBoxLayout(self.brush_widget)
+        bw.setContentsMargins(10, 8, 10, 10)
+        bw.setSpacing(8)
+        self.brush_note = QLabel("The brush works on map sheets.")
+        self.brush_note.setObjectName("muted")
+        self.brush_note.setWordWrap(True)
+        bw.addWidget(self.brush_note)
         self.work = QFrame()
         self.work.setObjectName("workbox")
         wk = QVBoxLayout(self.work)
         wk.setContentsMargins(10, 8, 10, 10)
         wk.setSpacing(7)
-        self.work_title = QLabel()
-        self.work_title.setObjectName("boxTitle")
-        wk.addWidget(self.work_title)
+        self.work_title = QLabel()            # (kept for the full name; the dropdown shows it)
+        self.work_title.hide()
+        row = QHBoxLayout()
+        lbl = QLabel("Into")
+        lbl.setObjectName("faint")
+        row.addWidget(lbl)
+        self.into_box = QComboBox()
+        self.into_box.setToolTip("The layer the brush and eraser work on")
+        self.into_box.activated.connect(self.into_chosen)
+        row.addWidget(self.into_box, 1)
+        wk.addLayout(row)
         # options: when, and how common (each only if the workbook uses them)
         self.opts = QWidget()
         o = QHBoxLayout(self.opts)
@@ -1015,7 +1054,7 @@ class RangesPanel(QWidget):
         self.tool_hint.setWordWrap(True)
         row.addWidget(self.tool_hint, 1)
         wk.addLayout(row)
-        b.addWidget(self.work)
+        bw.addWidget(self.work)
 
         # ---- view
         lbl = QLabel("View")
@@ -1046,7 +1085,7 @@ class RangesPanel(QWidget):
         self.all_box.setToolTip("Off: the selected layer's area is bright and the others fade.\n"
                                 "Paths and markers always show.")
         self.all_box.toggled.connect(self.all_toggled)
-        b.addWidget(self.all_box)
+        self.all_box.hide()
         self.solo_note = QPushButton()
         self.solo_note.setFlat(True)
         self.solo_note.setStyleSheet("text-align: left;")
@@ -1110,6 +1149,8 @@ class RangesPanel(QWidget):
         is_map = bool(book is not None and ws is not None and ws.title in book.meta["maps"])
         self.no_map.setVisible(not is_map)
         self.body.setVisible(is_map)
+        self.work.setVisible(is_map)
+        self.brush_note.setVisible(not is_map)
         if ws is None:
             self.title.setText("")
             self.no_map_text.setText("Open a workbook to work with layers.")
@@ -1124,6 +1165,7 @@ class RangesPanel(QWidget):
             self.btn_use_sel.show()
             return
         self.title.setText(ws.title)
+        self.sync_master()
         self.all_box.blockSignals(True)
         self.all_box.setChecked(self.st.all_areas)
         self.all_box.blockSignals(False)
@@ -1216,13 +1258,11 @@ class RangesPanel(QWidget):
                 if group:
                     where = [t for t in maps if layer.has_map(t)]
                     text += f"  · on {', '.join(where)}" if where else "  · nothing added yet"
-                it = QListWidgetItem(swatch(layer.color), text)
+                it = QListWidgetItem("")
                 it.setData(Qt.UserRole, layer.name)
-                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-                it.setCheckState(Qt.Checked if layer.visible else Qt.Unchecked)
-                if group:
-                    it.setForeground(QColor(self.window.theme["faint"]))
+                it.setToolTip(text)
                 self.list.addItem(it)
+                self.list.setItemWidget(it, self._row_widget(layer, text, faint=bool(group)))
                 if layer.name == self.st.layer:
                     current = it
         if current is None:
@@ -1238,6 +1278,46 @@ class RangesPanel(QWidget):
         self.list.setFixedHeight(min(170, rows * self.list.sizeHintForRow(0 if self.list.count() else -1) + 8)
                                  if self.list.count() else 60)
         self.sync_style_box()
+
+    def _row_widget(self, layer, text, faint=False):
+        """One layer in the list: an eye (show / hide), its colour, its name."""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(4, 1, 4, 1)
+        h.setSpacing(6)
+        eye = QToolButton()
+        eye.setObjectName("eyeBtn")
+        eye.setCheckable(True)
+        eye.setChecked(layer.visible)
+        eye.setAutoRaise(True)
+        eye.setIconSize(QSize(18, 18))
+        col = self.window.theme["text"].lstrip("#")
+        eye.setIcon(tool_icon("eye" if layer.visible else "eye_off", col, col, 18))
+        eye.setToolTip("Hide this layer on the map" if layer.visible else "Show this layer on the map")
+        eye.toggled.connect(lambda on, n=layer.name, b=eye: self.set_visible(n, on, b))
+        h.addWidget(eye)
+        sw = QLabel()
+        sw.setPixmap(swatch(layer.color).pixmap(14, 14))
+        h.addWidget(sw)
+        name = QLabel(text)
+        if faint:
+            name.setObjectName("faint")
+        h.addWidget(name, 1)
+        row.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        for w_ in (sw, name):
+            w_.setAttribute(Qt.WA_TransparentForMouseEvents, True)    # clicks select the row
+        return row
+
+    def set_visible(self, name, on, btn=None):
+        layer = self.book().ranges.get(name)
+        if layer is None:
+            return
+        layer.visible = on
+        if btn is not None:
+            col = self.window.theme["text"].lstrip("#")
+            btn.setIcon(tool_icon("eye" if on else "eye_off", col, col, 18))
+            btn.setToolTip("Hide this layer on the map" if on else "Show this layer on the map")
+        self.window.grid.viewport().update()
 
     def update_notes(self):
         st = self.st
@@ -1256,15 +1336,28 @@ class RangesPanel(QWidget):
         self.tool_hint.setText(f"Drag {shape} to erase" if (st.painting and st.erasing) else
                                f"Drag {shape} to paint" if st.painting else
                                "Pick up the brush")
-        if layer is None:
-            self.work_title.setText("Pick or make a layer to put squares in")
-        else:
-            full = f"Put squares in {layer.name}"
-            fm = self.work_title.fontMetrics()
-            self.work_title.setText(fm.elidedText(full, Qt.ElideRight, 250))
-            self.work_title.setToolTip(full)
-        self.solo_note.setText(f"Only {st.solo} is showing · show all")
+        if layer is not None:
+            self.work_title.setToolTip(f"Put squares in {layer.name}")
+        self.into_box.blockSignals(True)
+        self.into_box.clear()
+        for l in (self.book().ranges.layers if self.book() else []):
+            self.into_box.addItem(swatch(l.color), l.name, l.name)
+        self.into_box.addItem("New layer…", "__new__")
+        idx = self.into_box.findData(st.layer) if st.layer else -1
+        self.into_box.setCurrentIndex(idx if idx >= 0 else self.into_box.count() - 1)
+        self.into_box.blockSignals(False)
+        self.solo_note.setText(f"Only {st.solo} is showing.  Show all")
         self.solo_note.setVisible(bool(st.solo))
+
+    def sync_master(self):
+        on = self.window.layers_showing()
+        col = self.window.theme["text"].lstrip("#")
+        self.master_eye.blockSignals(True)
+        self.master_eye.setChecked(on)
+        self.master_eye.blockSignals(False)
+        self.master_eye.setIcon(tool_icon("eye" if on else "eye_off", col, col, 18))
+        self.master_eye.setText("Layers are showing on the map" if on else "Layers are hidden on the map")
+        self.master_eye.setToolTip("Hide every layer on the map" if on else "Show the layers on the map")
 
     def show_all(self):
         self.st.solo = None
@@ -1480,6 +1573,20 @@ class RangesPanel(QWidget):
         self.st.solo = None if self.st.solo == name else name
         self.update_notes()
         self.window.grid.viewport().update()
+
+    def into_chosen(self, idx):
+        name = self.into_box.itemData(idx)
+        if name == "__new__":
+            if self.new_layer() is None:
+                self.update_notes()
+            return
+        if name:
+            self.st.layer = name
+            self.fill_list()
+            self.fill_options()
+            self.update_notes()
+            self.window.grid.viewport().update()
+            self.window.update_paint_bar()
 
     def set_shape(self, shape):
         self.st.shape = shape

@@ -101,6 +101,8 @@ def stylesheet(t):
     QToolButton#shapeBtn:hover {{ border-color: {t['border']}; }}
     QToolButton#shapeBtn:checked {{ background: {t['panel2']}; border-color: {t['accent']}; }}
     QFrame#toolSep {{ color: {t['border']}; }}
+    QToolButton#eyeBtn {{ background: transparent; border: none; padding: 1px; text-align: left; }}
+    QToolButton#eyeBtn:hover {{ background: {t['panel2']}; border-radius: 4px; }}
     QCheckBox {{ background: transparent; spacing: 6px; }}
     QCheckBox::indicator {{ width: 13px; height: 13px; border: 1px solid {t['faint']}; border-radius: 3px; background: {t['canvas']}; }}
     QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}
