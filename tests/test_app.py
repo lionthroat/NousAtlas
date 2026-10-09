@@ -124,7 +124,7 @@ wb = openpyxl.load_workbook(path)
 assert "Ranges" in wb.sheetnames and wb["_NousAtlas"].sheet_state == "veryHidden"
 rows = list(wb["Ranges"].iter_rows(values_only=True))
 assert rows[0] == tuple(R.HEADERS), rows[0]
-bat_rows = [r for r in rows if r[0] == "Chimney Bats"]
+bat_rows = [r[:6] for r in rows if r[0] == "Chimney Bats"]
 assert ("Chimney Bats", "MAP — Day One", "Night", "common", "A1:Q15", bats.color) in bat_rows, bat_rows
 assert any(r[2] == "16:00" and r[3] == "common" and r[4] == "E3" for r in bat_rows), bat_rows
 assert any(r[2] == "16:00" and r[3] == "uncommon" and R.parse_squares(r[4]) == {(4, 2), (5, 2), (6, 2), (4, 3), (6, 3), (4, 4), (5, 4), (6, 4)} for r in bat_rows), bat_rows
@@ -377,3 +377,35 @@ p.here_add.activated.emit(idx)
 bats = w.book.ranges.get("Chimney Bats")
 assert bats.level(mp, 0, (7, 6)) in (1, 3) and "Chimney Bats" in p.here_layers
 print("OK here table")
+
+# ---- terrain from the map's own key; path layers; the dropper
+info = w.book.meta["maps"][mp]
+leg = w.squares.legend(mp)
+assert any("Badlands" in v for v in leg.values()), leg
+assert w.squares.terrain(mp, (7, 9)) and "Badlands" in w.squares.terrain(mp, (7, 9)), w.squares.terrain(mp, (7, 9))
+cd = w.squares.card(mp, (7, 9))
+assert "Terrain:" in SQ.card_html(cd, w.theme, mp)
+# the south track as a path
+w.book.begin([]); track = w.book.ranges.add("South track"); track.style = "path"
+w.book.ranges.paint(track, mp, set(R.BLOCKS), [(9, y) for y in range(7, 16)], 3); w.book.done("ranges")
+w.open_sheet(mp); w.right.setCurrentIndex(1); app.processEvents()
+w.grab().save(os.path.join(shot_dir, "path.png"))
+assert "path" in SQ.card_html(w.squares.card(mp, (9, 10)), w.theme, mp)
+# dropper: pick the badlands red, put it on another square
+rb_, cb_ = R.square_cell(info, (7, 9))
+red = model_hex = None
+import atlas_model as M
+red = M.resolve_color(w.book.sheet(mp).cell(rb_, cb_).fill.fgColor, w.book.theme)
+QTest.mouseClick(w.grid.viewport(), Qt.LeftButton, Qt.AltModifier, w.grid.cell_rect(rb_, cb_).center())
+assert w.last_fill_color == red
+tr_, tc_ = R.square_cell(info, (9, 10))
+w.grid.set_current(tr_, tc_)
+QTest.keyClick(w, Qt.Key_F, Qt.ControlModifier | Qt.ShiftModifier)
+assert M.resolve_color(w.book.sheet(mp).cell(tr_, tc_).fill.fgColor, w.book.theme) == red
+assert "Badlands" in w.squares.terrain(mp, (9, 10))
+assert w.save()
+wb = openpyxl.load_workbook(path)
+assert any(r[0] == "South track" and r[6] == "path" for r in wb["Ranges"].iter_rows(values_only=True))
+w.close_book(); w.open_path(path)
+assert w.book.ranges.get("South track").style == "path"
+print("OK terrain/path/dropper")

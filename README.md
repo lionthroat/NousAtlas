@@ -73,6 +73,13 @@ them) → *Link to a map*. Following a link pulses a ring around the square
 it lands on. On maps, the selection is a two-tone ring that shows up on any
 colour.
 
+Each layer draws as an **area** (fills squares: ranges, regions), a **path**
+(a line joining neighbouring squares: roads, tracks, rivers) or a **marker**
+(a dot: one-off things). Square cards also name the **terrain**, read from
+the map sheet's own key (a filled swatch beside its label). **Alt+click**
+any cell to pick up its fill; select cells and press **Ctrl+Shift+F** (or
+the fill button) to paint it.
+
 Ranges are saved in a plain sheet called **Ranges** (Creature | Map | Times |
 Abundance | Squares | Colour), with squares written like `I6` or `G9:K12`.
 Atlas rewrites that sheet on save and hides it from the sidebar (*View → Show

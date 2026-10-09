@@ -41,12 +41,13 @@ class SquareIndex:
         self.version = None
         self.places = {}                   # (map, (x, y)) -> [(sheet, row, col, label)]
         self.homes = {}                    # layer name (lower) -> (sheet, row, col)
+        self.legends = {}                  # map title -> {fill hex: label}
 
     def refresh(self):
         if self.version == self.book.version:
             return
         self.version = self.book.version
-        self.places, self.homes = {}, {}
+        self.places, self.homes, self.legends = {}, {}, {}
         maps = self.book.meta["maps"]
         names = {l.name.lower() for l in self.book.ranges.layers} if self.book.ranges else set()
         for ws in self.book.user_sheets():
@@ -62,6 +63,67 @@ class SquareIndex:
                 v = cell.value
                 if not is_map and isinstance(v, str) and v.strip().lower() in names:
                     self.homes.setdefault(v.strip().lower(), (ws.title, r, c))
+
+    def legend(self, map_title):
+        """{fill colour: name} read from the map sheet's own key: a filled
+        swatch beside a text label, outside the grid. Under a heading with
+        KEY or LEGEND in it, if there is one; colours used for more than one
+        label are left out."""
+        self.refresh()
+        if map_title in self.legends:
+            return self.legends[map_title]
+        out = {}
+        ws = self.book.sheet(map_title)
+        info = self.book.meta["maps"].get(map_title)
+        if ws is None or not info:
+            return out
+        r0, c0 = info["row"], info["col"]
+        r1, c1 = r0 + info["rows"] - 1, c0 + info["cols"] - 1
+
+        def fill_of(cell):
+            if cell is None or not cell.has_style or not cell.fill or cell.fill.fill_type != "solid":
+                return None
+            from atlas_model import resolve_color
+            return resolve_color(cell.fill.fgColor, self.book.theme)
+
+        def label_right(r, c):
+            for cc in range(c + 1, c + 4):
+                cell = ws._cells.get((r, cc))
+                if cell is not None and isinstance(cell.value, str) and cell.value.strip():
+                    return cell.value.strip()
+            return None
+
+        heading = None
+        for (r, c), cell in ws._cells.items():
+            if isinstance(cell.value, str) and ("KEY" in cell.value.upper() or "LEGEND" in cell.value.upper()) \
+                    and not (r0 <= r <= r1 and c0 <= c <= c1):
+                heading = (r, c)
+                break
+        candidates = {}
+        for (r, c), cell in ws._cells.items():
+            if r0 <= r <= r1 and c0 <= c <= c1:
+                continue
+            if heading and not (r > heading[0] and abs(c - heading[1]) <= 1):
+                continue
+            hexv = fill_of(cell)
+            label = label_right(r, c) if hexv else None
+            if hexv and label:
+                candidates.setdefault(hexv, set()).add(label)
+        for hexv, labels in candidates.items():
+            if len(labels) == 1:
+                out[hexv] = labels.pop()
+        self.legends[map_title] = out
+        return out
+
+    def terrain(self, map_title, sq):
+        info = self.book.meta["maps"][map_title]
+        ws = self.book.sheet(map_title)
+        r, c = R.square_cell(info, sq)
+        cell = ws._cells.get((r, c)) if ws is not None else None
+        if cell is None or not cell.has_style or not cell.fill or cell.fill.fill_type != "solid":
+            return None
+        from atlas_model import resolve_color
+        return self.legend(map_title).get(resolve_color(cell.fill.fgColor, self.book.theme))
 
     def _square_for(self, location):
         sheet, _, ref = location.rpartition("!")
@@ -109,11 +171,11 @@ class SquareIndex:
                 life.append((layer, max(levels.values()), blocks, self.homes.get(layer.name.lower())))
         note = self.book.meta.get("square_notes", {}).get(map_title, {}).get(R.square_label(sq), "")
         return {"square": R.square_label(sq), "mark": mark, "places": self.places.get((map_title, sq), []),
-                "life": life, "note": note}
+                "life": life, "note": note, "terrain": self.terrain(map_title, sq)}
 
     def has_content(self, map_title, sq):
         cd = self.card(map_title, sq)
-        return bool(cd["places"] or cd["life"] or cd["note"] or cd["mark"])
+        return bool(cd["places"] or cd["life"] or cd["note"] or cd["mark"] or cd["terrain"])
 
 
 def card_html(cd, theme, map_title, with_note=True):
@@ -123,6 +185,9 @@ def card_html(cd, theme, map_title, with_note=True):
     out = [f"<div style='color:{t['group']}; font-weight:bold'>{esc(cd['square'])}"
            + (f" <span style='color:{t['muted']}; font-weight:normal'>· {esc(cd['mark'])}</span>" if cd["mark"] else "")
            + "</div>"]
+    if cd.get("terrain"):
+        out.append(f"<div style='color:{t['text']}; margin-top:2px'><span style='color:{t['faint']}'>Terrain:</span> "
+                   f"{esc(cd['terrain'])}</div>")
     if cd["places"]:
         out.append(f"<div style='color:{t['faint']}; margin-top:6px'>Places</div>")
         for sheet, r, c, label in cd["places"]:
@@ -133,6 +198,8 @@ def card_html(cd, theme, map_title, with_note=True):
         for layer, level, blocks, home in cd["life"]:
             when = R.times_label(blocks)
             what = f"{R.LEVELS[level]} · {when.lower() if when in ('Day', 'Night', 'All day') else when}"
+            if layer.style != "area":
+                what = f"{layer.style} · " + what
             kind = f"{esc(home[0])}: " if home else ""
             name = (f"<a style='color:#{layer.color}; text-decoration:none' href='{href(*home)}'>{esc(layer.name)}</a>"
                     if home else f"<span style='color:#{layer.color}'>{esc(layer.name)}</span>")

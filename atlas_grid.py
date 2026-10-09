@@ -86,6 +86,7 @@ class SheetView(QAbstractScrollArea):
     zoomChanged = Signal(float)
     contextRequested = Signal(object)  # a QMenu to add to before it pops up
     cellHovered = Signal(int, int, object)   # row, col, global position (0s = off the cells)
+    colorPicked = Signal(int, int)           # Alt+click: pick up this cell's fill
 
     def __init__(self, theme):
         super().__init__()
@@ -1099,6 +1100,9 @@ class SheetView(QAbstractScrollArea):
             self._drag = ("rows", row)
             self.viewport().update()
             self.currentChanged.emit()
+            return
+        if e.modifiers() & Qt.AltModifier and row and col:
+            self.colorPicked.emit(row, col)
             return
         if self.tool is not None and self.tool.press(row, col, e):
             self._drag = ("tool",)

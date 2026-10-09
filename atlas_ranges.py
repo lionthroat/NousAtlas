@@ -12,7 +12,7 @@ rewrites that sheet on save; in Atlas you paint instead of typing.
 
 import re
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygon
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QComboBox, QFrame,
                                QTableWidget, QTableWidgetItem,
@@ -31,7 +31,8 @@ NIGHT = {20, 0, 4}           # 20:00-08:00
 LEVELS = {3: "common", 2: "uncommon", 1: "rare"}
 LEVEL_NAMES = {v: k for k, v in LEVELS.items()}
 ALPHA = {3: 215, 2: 135, 1: 70}
-HEADERS = ["Creature", "Map", "Times", "Abundance", "Squares", "Colour"]
+HEADERS = ["Layer", "Map", "Times", "Abundance", "Squares", "Colour", "Style"]
+STYLES = {"area": "Area", "path": "Path", "marker": "Marker"}
 
 
 def block_label(b):
@@ -117,6 +118,7 @@ class Layer:
         self.name = name
         self.color = color
         self.visible = True
+        self.style = "area"      # area (fill), path (a line through squares) or marker (a dot)
         self.maps = {}           # map title -> {block: {(x, y): level}}
 
     def level(self, map_title, block, sq):
@@ -177,17 +179,20 @@ class Ranges:
         r = cls()
         title = book.meta.get("ranges_sheet", RANGES_SHEET)
         ws = book.sheet(title)
-        if ws is None or [str(ws.cell(1, i + 1).value or "") for i in range(len(HEADERS))] != HEADERS:
+        heads = [str(ws.cell(1, i + 1).value or "") for i in range(6)] if ws is not None else []
+        if not heads or heads[0] not in ("Layer", "Creature") or heads[1:] != HEADERS[1:6]:
             return r
         book.meta["ranges_sheet"] = title
         for row in ws.iter_rows(min_row=2, values_only=True):
-            row = list(row) + [None] * 6
-            name, map_title, times, level, squares, color = row[:6]
+            row = list(row) + [None] * 7
+            name, map_title, times, level, squares, color, style = row[:7]
             if not name:
                 continue
             layer = r.get(str(name)) or r.add(str(name), _hex(color))
             if _hex(color):
                 layer.color = _hex(color)
+            if str(style or "").strip().lower() in STYLES:
+                layer.style = str(style).strip().lower()
             if map_title:
                 lv = LEVEL_NAMES.get(str(level or "common").strip().lower(), 3)
                 r.paint(layer, str(map_title), parse_times(times), parse_squares(squares), lv)
@@ -210,7 +215,7 @@ class Ranges:
         for i, h in enumerate(HEADERS, 1):
             cell = ws.cell(1, i, h)
             cell.font, cell.fill = head_font, head_fill
-        widths = [26, 22, 22, 12, 60, 10]
+        widths = [26, 22, 22, 12, 60, 10, 10]
         for i, w in enumerate(widths, 1):
             ws.column_dimensions[num_to_col(i)].width = w
         ws.freeze_panes = "A2"
@@ -230,7 +235,8 @@ class Ranges:
                         rows_out.append((lv, bs, sqs))
                 rows_out.sort(key=lambda x: (min(BLOCKS.index(b) for b in x[1]) if x[1] != NIGHT else -1, -x[0]))
                 for lv, bs, sqs in rows_out:
-                    values = [layer.name, map_title, times_label(bs), LEVELS[lv], squares_text(sqs), layer.color]
+                    values = [layer.name, map_title, times_label(bs), LEVELS[lv], squares_text(sqs), layer.color,
+                              layer.style]
                     for i, v in enumerate(values, 1):
                         ws.cell(row, i, v).alignment = Alignment(vertical="top", wrap_text=(i == 5))
                     ws.cell(row, 6).fill = PatternFill("solid", fgColor="FF" + layer.color)
@@ -239,6 +245,7 @@ class Ranges:
             if not wrote:
                 ws.cell(row, 1, layer.name)
                 ws.cell(row, 6, layer.color).fill = PatternFill("solid", fgColor="FF" + layer.color)
+                ws.cell(row, 7, layer.style)
                 row += 1
 
 
@@ -313,10 +320,22 @@ class ViewState:
 
 
 class Overlay:
-    """Paints visible layers onto map squares (called by the grid)."""
+    """Paints visible layers onto map squares (called by the grid).
+    Area layers fill (side by side when several share a square), paths draw
+    a line joining neighbouring squares, markers draw a dot."""
 
     def __init__(self, window):
         self.window = window
+
+    def _view(self, layer, map_title, sq):
+        """(day level, night level) in split view, else (level, level)."""
+        st = self.window.range_state
+        if st.split:
+            d = max((layer.level(map_title, b, sq) for b in DAY), default=0)
+            n = max((layer.level(map_title, b, sq) for b in NIGHT), default=0)
+            return d, n
+        lv = max((layer.level(map_title, b, sq) for b in st.blocks), default=0)
+        return lv, lv
 
     def paint(self, p, ws, row, col, rect):
         book = self.window.book
@@ -331,28 +350,24 @@ class Overlay:
         if not self.window.layers_showing():
             return
         st = self.window.range_state
-        entries = []
+        areas, lines, marks = [], [], []
         for layer in book.ranges.layers:
             if st.solo and layer.name != st.solo:
                 continue
             if not st.solo and not layer.visible:
                 continue
-            if st.split:
-                d = max((layer.level(ws.title, b, sq) for b in DAY), default=0)
-                n = max((layer.level(ws.title, b, sq) for b in NIGHT), default=0)
-                if d or n:
-                    entries.append((layer, d, n))
-            else:
-                lv = max((layer.level(ws.title, b, sq) for b in st.blocks), default=0)
-                if lv:
-                    entries.append((layer, lv, lv))
-        if not entries:
+            d, n = self._view(layer, ws.title, sq)
+            if not (d or n):
+                continue
+            {"path": lines, "marker": marks}.get(layer.style, areas).append((layer, d, n))
+        if not (areas or lines or marks):
             return
-        k = len(entries)
         inner = rect.adjusted(0, 0, -1, -1)
         p.save()
+        p.setRenderHint(QPainter.Antialiasing, True)
         p.setPen(Qt.NoPen)
-        for i, (layer, d, n) in enumerate(entries):
+        k = len(areas)
+        for i, (layer, d, n) in enumerate(areas):
             x1 = inner.left() + inner.width() * i // k
             x2 = inner.left() + inner.width() * (i + 1) // k
             stripe = QRect(x1, inner.top(), x2 - x1, inner.height())
@@ -367,6 +382,46 @@ class Overlay:
             if n:
                 p.setBrush(qcolor(layer.color, ALPHA[n]))
                 p.drawPolygon(QPolygon([tr, br, bl]))
+        c = QPointF(inner.center())
+        size = min(inner.width(), inner.height())
+        for layer, d, n in lines:
+            # a line from the centre toward every neighbour on the same path
+            ends = []
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if (dx, dy) == (0, 0):
+                        continue
+                    nb = (sq[0] + dx, sq[1] + dy)
+                    nd, nn = self._view(layer, ws.title, nb)
+                    if not (nd or nn):
+                        continue
+                    if dx and dy:
+                        # skip a diagonal when the two squares beside it already join them
+                        a = self._view(layer, ws.title, (sq[0] + dx, sq[1]))
+                        b = self._view(layer, ws.title, (sq[0], sq[1] + dy))
+                        if any(a) or any(b):
+                            continue
+                    ends.append(QPointF(c.x() + dx * inner.width() / 2, c.y() + dy * inner.height() / 2))
+            level = max(d, n)
+            width = max(3.0, size * (0.26 if level == 3 else 0.2 if level == 2 else 0.14))
+            dashed = st.split and (not d or not n)
+            for pen_color, extra in ((QColor(20, 20, 26, 150), 3.0), (qcolor(layer.color, 255 if level == 3 else ALPHA[level] + 30), 0.0)):
+                pen = QPen(pen_color, width + extra, Qt.DashLine if dashed and not extra else Qt.SolidLine,
+                           Qt.RoundCap, Qt.RoundJoin)
+                p.setPen(pen)
+                if ends:
+                    for e in ends:
+                        p.drawLine(c, e)
+                else:
+                    p.drawPoint(c)
+        for i, (layer, d, n) in enumerate(marks):
+            level = max(d, n)
+            r = size * 0.2
+            off = (i - (len(marks) - 1) / 2) * r * 2.2
+            centre = QPointF(c.x() + off, c.y())
+            p.setPen(QPen(QColor(20, 20, 26, 170), 2))
+            p.setBrush(qcolor(layer.color, 255 if level == 3 else ALPHA[level] + 30))
+            p.drawEllipse(centre, r, r)
         p.restore()
 
 
@@ -530,6 +585,17 @@ class RangesPanel(QWidget):
             btn.clicked.connect(fn)
             row.addWidget(btn)
         b.addLayout(row)
+        row = QHBoxLayout()
+        lbl = QLabel("Draw as")
+        lbl.setObjectName("faint")
+        row.addWidget(lbl)
+        self.style_box = QComboBox()
+        for key, label in STYLES.items():
+            self.style_box.addItem({"area": "Area (fills squares)", "path": "Path (a line: roads, tracks, rivers)",
+                                    "marker": "Marker (a dot: one-off things)"}[key], key)
+        self.style_box.activated.connect(self.style_chosen)
+        row.addWidget(self.style_box, 1)
+        b.addLayout(row)
         self.solo_note = QLabel()
         self.solo_note.setObjectName("muted")
         b.addWidget(self.solo_note)
@@ -655,6 +721,7 @@ class RangesPanel(QWidget):
         if current is not None:
             self.list.setCurrentItem(current)
         self.list.blockSignals(False)
+        self.sync_style_box()
 
     def update_notes(self):
         st = self.st
@@ -698,7 +765,7 @@ class RangesPanel(QWidget):
         tbl.setRowCount(len(rows))
         self.here_layers = [layer.name for layer, _ in rows]
         for i, (layer, levels) in enumerate(rows):
-            name = QTableWidgetItem(swatch(layer.color), layer.name)
+            name = QTableWidgetItem(swatch(layer.color), layer.name + ("" if layer.style == "area" else f" ({layer.style})"))
             name.setFlags(Qt.ItemIsEnabled)
             name.setToolTip(layer.name)
             tbl.setItem(i, 0, name)
@@ -805,8 +872,24 @@ class RangesPanel(QWidget):
             layer.visible = it.checkState() == Qt.Checked
             self.window.grid.viewport().update()
 
+    def style_chosen(self, idx):
+        layer = self._selected_layer()
+        style = self.style_box.itemData(idx)
+        if layer is None or style == layer.style:
+            return
+        self.window.book.begin([])
+        self.window.book.ranges.get(layer.name).style = style
+        self.window.book.done("ranges")
+
+    def sync_style_box(self):
+        layer = self._selected_layer() if self.list.currentItem() is not None else None
+        self.style_box.setEnabled(layer is not None)
+        if layer is not None:
+            self.style_box.setCurrentIndex(self.style_box.findData(layer.style))
+
     def current_layer_changed(self, cur, prev):
         if cur is not None:
+            self.sync_style_box()
             self.st.layer = cur.data(Qt.UserRole)
             self.update_notes()
             self.window.update_paint_bar()

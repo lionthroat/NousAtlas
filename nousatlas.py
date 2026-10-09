@@ -785,6 +785,7 @@ class MainWindow(QMainWindow):
         self.grid.zoomChanged.connect(lambda z: self.zoom_label.setText(f"{round(z * 100)}%"))
         self.grid.contextRequested.connect(self.grid_menu)
         self.grid.cellHovered.connect(self.on_hover)
+        self.grid.colorPicked.connect(self.pick_fill_from)
         self.squares = None
         self.card = HoverCard(self)
         self.card_timer_show = QTimer(self)
@@ -1100,6 +1101,8 @@ class MainWindow(QMainWindow):
             fm.addAction(a)
         fm.addAction(self.act("Text colour…", self.choose_text_color))
         fm.addAction(self.act("Fill colour…", self.choose_fill_color))
+        fm.addAction(self.act("Apply the picked fill", lambda: self.apply_fill(self.last_fill_color), "Ctrl+Shift+F",
+                              tip="Alt+click a cell to pick up its fill, then select cells and press Ctrl+Shift+F"))
         fm.addAction(self.a_clear_fmt)
         fm.addSeparator()
         fm.addAction(self.act("Sheet margins and spacing…", self.edit_sheet_layout))
@@ -2074,6 +2077,23 @@ class MainWindow(QMainWindow):
         if hex6 is None:
             return
         self.apply_fill(hex6 or None)
+
+    def pick_fill_from(self, r, c):
+        """Alt+click: the dropper. The fill button now paints this colour."""
+        ws = self.current_ws()
+        cell = ws._cells.get((r, c)) if ws is not None else None
+        hexv = (model.resolve_color(cell.fill.fgColor, self.book.theme)
+                if cell is not None and cell.has_style and cell.fill and cell.fill.fill_type else None)
+        if not hexv:
+            self.statusBar().showMessage("That cell has no fill to pick up.", 4000)
+            return
+        self.last_fill_color = hexv
+        self.update_color_buttons()
+        name = None
+        if ws.title in self.book.meta["maps"] and self.squares is not None:
+            name = self.squares.legend(ws.title).get(hexv)
+        self.statusBar().showMessage(f"Picked #{hexv}{f' ({name})' if name else ''}. Select cells, then click the fill "
+                                     "button or press Ctrl+Shift+F.", 8000)
 
     def apply_fill(self, hex6):
         if hex6:
