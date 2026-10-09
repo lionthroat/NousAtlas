@@ -87,6 +87,7 @@ class SheetView(QAbstractScrollArea):
     contextRequested = Signal(object)  # a QMenu to add to before it pops up
     cellHovered = Signal(int, int, object)   # row, col, global position (0s = off the cells)
     colorPicked = Signal(int, int)           # Alt+click: pick up this cell's fill
+    badgeActivated = Signal(str)             # the map mark on a name that has a layer
     deleteRequested = Signal(str)            # Delete key on whole rows ("rows") or columns ("cols")
 
     def __init__(self, theme):
@@ -117,6 +118,7 @@ class SheetView(QAbstractScrollArea):
         self._region = QRect()
         self.pad_x, self.pad_y, self.gap = PAD_X, PAD_Y, 0
         self.ring_selection = False      # set on map sheets
+        self.badge_for = None            # fn(ws, row, col) -> (colour, name, painted?, tip) for cells with a layer
         self.sel_kind = None             # "rows" / "cols" when picked by header (or Shift/Ctrl+Space)
         self.beacon = None
         self.beacon_phase = None
@@ -715,6 +717,23 @@ class SheetView(QAbstractScrollArea):
         if isinstance(shown, fx.XlError):
             color = QColor(self.theme["danger"])
         flags = int(hflag) | int(vflag) | wrap
+        badge = self.badge_for(self.ws, r, c) if self.badge_for is not None else None
+        if badge is not None:
+            br = self.badge_rect(r, c)
+            inner.setRight(min(inner.right(), br.left() - 4))
+            color, _, painted, _ = badge
+            p.save()
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setPen(QPen(QColor(self.theme["text"]), 1.4))
+            p.setBrush(qcolor(color) if painted else Qt.NoBrush)
+            p.drawEllipse(br)
+            if painted:                     # a tiny folded-map mark inside
+                p.setPen(QPen(QColor(20, 20, 26, 170), 1.1))
+                cx, cy, rr = br.center().x(), br.center().y(), br.width() / 4
+                p.drawPolyline([QPoint(int(cx - rr), int(cy + rr)), QPoint(int(cx - rr), int(cy - rr)),
+                                QPoint(int(cx), int(cy)), QPoint(int(cx + rr), int(cy - rr)),
+                                QPoint(int(cx + rr), int(cy + rr))])
+            p.restore()
         if self.overlay is not None and getattr(self.overlay, "line_through", None) \
                 and self.overlay.line_through(self.ws, r, c):
             # a path runs under this label: give the text a backing in the square's own colour
@@ -775,6 +794,12 @@ class SheetView(QAbstractScrollArea):
                 for i in range(3):
                     p.drawEllipse(QPoint(m.left() + 3 + i * 4, m.center().y()), 1, 1)
         p.restore()
+
+    def badge_rect(self, r, c):
+        """Where the map mark sits on a cell with a layer: at its right, middle."""
+        rect = self.cell_rect(r, c)
+        d = max(12, int(16 * self.zoom))
+        return QRect(rect.right() - d - 5, rect.center().y() - d // 2, d, d)
 
     def link_rect(self, r, c):
         """Where a link cell's button sits (around its text)."""
@@ -1142,6 +1167,11 @@ class SheetView(QAbstractScrollArea):
             self._drag = ("tool",)
             return
         cell = self.ws._cells.get((row, col))
+        if self.badge_for is not None and not (e.modifiers() & Qt.ShiftModifier):
+            badge = self.badge_for(self.ws, row, col)
+            if badge is not None and self.badge_rect(row, col).adjusted(-4, -4, 4, 4).contains(pos):
+                self.badgeActivated.emit(badge[1])
+                return
         target = link_target(cell)
         if target and not (e.modifiers() & Qt.ShiftModifier):
             on_button = self.link_hit(row, col, pos)
@@ -1177,8 +1207,12 @@ class SheetView(QAbstractScrollArea):
             if self.ws is not None and not edge and not tip:
                 row, col = self.hit(pos)
                 cell = self.ws._cells.get((row, col)) if row and col else None
+                badge = self.badge_for(self.ws, row, col) if (self.badge_for and row and col) else None
+                if badge is not None and self.badge_rect(row, col).adjusted(-4, -4, 4, 4).contains(pos):
+                    self.viewport().setCursor(Qt.PointingHandCursor)
+                    tip = badge[3]
                 target = link_target(cell)
-                if target and self.link_hit(row, col, pos):
+                if not tip and target and self.link_hit(row, col, pos):
                     self.viewport().setCursor(Qt.PointingHandCursor)
                     where = target[1:] if target.startswith("#") else target
                     tip = f"Go to {where}"

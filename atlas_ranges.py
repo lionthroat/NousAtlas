@@ -460,6 +460,76 @@ def _hex(v):
 Book.ranges_writer = staticmethod(lambda book: book.ranges.write(book) if book.ranges is not None else None)
 
 
+# ---------------------------------------------------------------- summaries
+
+
+def short_terrain(label):
+    """'Badlands - Failson country' -> 'Badlands'."""
+    for sep in (" - ", " — ", " – ", " (", ":"):
+        if sep in label:
+            label = label.split(sep)[0]
+    return label.strip()
+
+
+def summarize(book, index, layer, maps):
+    """A one-line description of where a layer is, e.g.
+    'Badlands · all day · common | 61 squares across 4 terrains · night · uncommon'."""
+    scheme = book.ranges.scheme
+    rarity = rarity_of(book)
+    painted = [m for m in maps if layer.has_map(m)]
+    if not painted:
+        return "not on a map yet"
+    out = []
+    for m in painted:
+        periods = layer.maps[m]
+        info = book.meta["maps"][m]
+        all_squares = [(x, y) for x in range(1, info["cols"] + 1) for y in range(1, info["rows"] + 1)]
+        terrain_of = {sq: index.terrain(m, sq) for sq in all_squares}
+        totals = {}
+        for sq, t in terrain_of.items():
+            if t:
+                totals[t] = totals.get(t, 0) + 1
+        rows = []
+        for lv in (3, 2, 1):
+            by_squares = {}
+            for p in scheme.ids:
+                sqs = frozenset(sq for sq, v in periods.get(p, {}).items() if v == lv)
+                if sqs:
+                    by_squares.setdefault(sqs, set()).add(p)
+            for sqs, ps in by_squares.items():
+                rows.append((lv, ps, sqs))
+        rows.sort(key=lambda x: (-len(x[2]), -x[0]))
+        for lv, ps, sqs in rows:
+            groups = {}
+            for sq in sqs:
+                groups.setdefault(terrain_of.get(sq), set()).add(sq)
+            named = sorted(((t, s) for t, s in groups.items() if t), key=lambda ts: -len(ts[1]))
+            loose = groups.get(None, set())
+            bits = []
+            for t, s in named:
+                name = short_terrain(t)
+                if len(s) == totals.get(t):
+                    bits.append(name)
+                else:
+                    where = squares_text(s)
+                    bits.append(f"{name} ({where})" if len(where) <= 22 else f"part of {name}")
+            if loose:
+                where = squares_text(loose)
+                bits.append(where if len(where) <= 22 else f"{len(loose)} more squares")
+            if len(bits) > 3:
+                place = f"{len(sqs)} squares across {len(named)} terrains"
+            else:
+                place = " + ".join(bits)
+            words = [place]
+            if scheme.has_time() and layer.style == "area":
+                words.append(scheme.times_label(ps).lower())
+            if rarity and layer.style == "area":
+                words.append((rarity.get(lv) or "").lower())
+            text = " · ".join(w for w in words if w)
+            out.append((f"{m}: " if len(painted) > 1 else "") + text)
+    return " | ".join(out)
+
+
 # ---------------------------------------------------------------- maps
 
 
@@ -608,7 +678,7 @@ class Overlay:
         return [max((layer.level(map_title, b, sq) for b in ids), default=0) for _, ids, _ in parts]
 
     def line_through(self, ws, row, col):
-        """True when a path or marker is drawn on this square (labels get a backing)."""
+        """True when any layer is drawn on this square (its label gets a backing)."""
         book = self.window.book
         if book is None or book.ranges is None or not self.window.layers_showing():
             return False
@@ -618,7 +688,7 @@ class Overlay:
             return False
         st = self.window.range_state
         for layer in book.ranges.layers:
-            if layer.style == "area" or (st.solo and layer.name != st.solo) or (not st.solo and not layer.visible):
+            if (st.solo and layer.name != st.solo) or (not st.solo and not layer.visible):
                 continue
             if layer.present(ws.title, sq):
                 return True

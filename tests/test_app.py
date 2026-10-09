@@ -738,3 +738,36 @@ assert w.range_state.layer == "South track"
 # on a sheet that isn't a map, the Brush button explains instead
 w.open_sheet("Fauna"); w.brush_btn.click(); assert not w.range_state.painting and not w.brush_btn.isChecked()
 print("OK eyes and brush palette")
+
+# ---- halos under any layer; a map mark on names that have a layer; range summaries
+w.open_sheet(mp); w.set_layers_on(True)
+ar = w.book.ranges.get("Rect test"); ar.visible = True
+assert w.grid.overlay.line_through(w.book.sheet(mp), *R.square_cell(info, (1, 10)))    # an area gives labels a halo
+# badlands squares, from the map's own key
+bad = [sq for sq in [(x, y) for x in range(1, info["cols"] + 1) for y in range(1, info["rows"] + 1)]
+       if (w.squares.terrain(mp, sq) or "").startswith("Badlands")]
+assert len(bad) > 8, bad
+fauna = w.book.sheet("Fauna")
+srow = next(r for r in range(1, 40) if str(fauna.cell(r, 1).value or "").startswith("Fool's Gold Scorpion"))
+sname = fauna.cell(srow, 1).value
+w.book.begin([]); sl = w.book.ranges.get(sname) or w.book.ranges.add(sname)
+w.book.ranges.paint(sl, mp, set(R.BLOCKS), bad, 3); w.book.done("ranges")
+w.open_sheet("Fauna")
+badge = w.badge_for(fauna, srow, 1)
+assert badge is not None and badge[1] == sname and badge[2], badge
+assert w.badge_for(fauna, srow, 2) is None
+text = R.summarize(w.book, w.squares, w.book.ranges.get(sname), w.map_titles())
+assert text.startswith("Badlands · all day · common"), text
+# click the mark: off to the map, on the layer
+w.grid.ensure_visible(srow, 1); app.processEvents()
+QTest.mouseClick(w.grid.viewport(), Qt.LeftButton, Qt.NoModifier, w.grid.badge_rect(srow, 1).center())
+assert w.ws_title == mp and w.range_state.layer == sname, (w.ws_title, w.range_state.layer)
+w.go_back(); assert w.ws_title == "Fauna"
+# summaries into column B, kept up to date as layers change
+QInputDialog.getItem = staticmethod(lambda parent, title, label, items, cur, *a, **k: (next(i for i in items if i.startswith("B")), True))
+w.grid.set_current(srow, 1); w.set_summary_column()
+assert fauna.cell(srow, 2).value.startswith("Badlands · all day · common"), fauna.cell(srow, 2).value
+w.book.begin([]); w.book.ranges.paint(w.book.ranges.get(sname), mp, set(R.NIGHT), [(1, 1), (2, 1)], 2); w.book.done("ranges")
+assert "night · uncommon" in fauna.cell(srow, 2).value, fauna.cell(srow, 2).value
+w.undo(); assert "uncommon" not in fauna.cell(srow, 2).value
+print("OK halo, marks, summaries")

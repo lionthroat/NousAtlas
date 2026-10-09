@@ -865,6 +865,9 @@ class MainWindow(QMainWindow):
         self.grid.contextRequested.connect(self.grid_menu)
         self.grid.cellHovered.connect(self.on_hover)
         self.grid.colorPicked.connect(self.pick_fill_from)
+        self.grid.badge_for = self.badge_for
+        self.grid.badgeActivated.connect(self.go_to_layer)
+        self._badge_cache = (None, {})
         self.grid.deleteRequested.connect(lambda kind: self.delete_rows() if kind == "rows" else self.delete_cols())
         self.squares = None
         self.card = HoverCard(self)
@@ -1825,6 +1828,132 @@ class MainWindow(QMainWindow):
         ends[ranges.square_label(sq)] = mode
         self.book.done("ranges")
 
+    # ------------------------------------------------------------ names that have a layer
+    def _layers_by_name(self):
+        if self.book is None or self.book.ranges is None:
+            return {}
+        ver, names = self._badge_cache
+        if ver != self.book.version or ver is None:
+            names = {l.name.strip().lower(): l for l in self.book.ranges.layers}
+            self._badge_cache = (self.book.version, names)
+        return names
+
+    def badge_for(self, ws, r, c):
+        """A cell whose text is a layer's name (on a sheet that isn't a map)
+        shows a map mark: filled when the layer is painted somewhere."""
+        if self.book is None or ws.title in self.book.meta["maps"] or self.read_only_sheet(ws):
+            return None
+        cell = ws._cells.get((r, c))
+        v = cell.value if cell is not None else None
+        if not isinstance(v, str) or len(v) > 80:
+            return None
+        layer = self._layers_by_name().get(v.strip().lower())
+        if layer is None:
+            return None
+        maps = [t for t in self.map_titles() if layer.has_map(t)]
+        tip = (f"{layer.name} is mapped on {', '.join(maps)}. Click to go there." if maps
+               else f"{layer.name} has a layer, but nothing's painted yet. Click to go to it.")
+        return (layer.color, layer.name, bool(maps), tip)
+
+    def go_to_layer(self, name):
+        layer = self.book.ranges.get(name)
+        if layer is None:
+            return
+        maps = self.map_titles()
+        painted = [t for t in maps if layer.has_map(t)]
+        target = (painted or maps or [None])[0]
+        if target is None:
+            return
+        self.show_range(layer.name, target)
+        # pulse the top-left corner of what's painted
+        info = self.book.meta["maps"][target]
+        sqs = sorted({sq for cells in layer.maps.get(target, {}).values() for sq, lv in cells.items() if lv},
+                     key=lambda s: (s[1], s[0]))
+        if sqs:
+            r, c = ranges.square_cell(info, sqs[0])
+            self.grid.set_current(r, c)
+            self.grid.flash(r, c)
+        self.statusBar().showMessage("Alt+← goes back.", 4000)
+
+    # ------------------------------------------------------------ range summaries
+    def summary_targets(self):
+        """{sheet: {"col": c, "name_col": n}}: columns Atlas keeps a range summary in."""
+        return self.book.meta.setdefault("range_summary", {}) if self.book is not None else {}
+
+    def update_range_summaries(self, sheets=None):
+        """Rewrite the summary cells from the layers (they're derived, so this
+        is safe to run after any change, undo included)."""
+        if self.book is None or self.squares is None:
+            return 0
+        names = self._layers_by_name()
+        maps = self.map_titles()
+        changed = 0
+        for title, spec in list(self.summary_targets().items()):
+            if sheets is not None and title not in sheets:
+                continue
+            ws = self.book.sheet(title)
+            if ws is None:
+                continue
+            col, ncol = spec.get("col"), spec.get("name_col")
+            for (r, c), cell in list(ws._cells.items()):
+                if c != ncol or not isinstance(cell.value, str):
+                    continue
+                layer = names.get(cell.value.strip().lower())
+                if layer is None:
+                    continue
+                text = ranges.summarize(self.book, self.squares, layer, maps)
+                target = ws.cell(r, col)
+                if target.value != text:
+                    target.value = text
+                    changed += 1
+        if changed:
+            self.book.dirty = True
+            self.book.calc.invalidate()
+            self.grid.content_changed()
+        return changed
+
+    def header_label(self, ws, c, below_row):
+        """The column's heading: the nearest text above a row that looks like one."""
+        for r in range(min(below_row - 1, 12), 0, -1):
+            cell = ws._cells.get((r, c))
+            if cell is not None and isinstance(cell.value, str) and cell.value.strip() and len(cell.value) < 40:
+                return cell.value.strip()
+        return ""
+
+    def set_summary_column(self):
+        ws = self.current_ws()
+        r, c = self.grid.cur
+        if ws is None:
+            return
+        cols = []
+        for cc in range(1, max(ws.max_column, 2) + 1):
+            if cc == c:
+                continue
+            head = self.header_label(ws, cc, r)
+            cols.append((f"{fx.num_to_col(cc)}" + (f" · {head}" if head else ""), cc))
+        labels = [l for l, _ in cols]
+        start = next((i for i, (_, cc) in enumerate(cols) if cc == c + 1), 0)
+        choice, ok = QInputDialog.getItem(self, "Range summaries",
+                                          "Write each mapped row's range summary into which column?\n"
+                                          "Atlas keeps it up to date as you paint. (It replaces what's in "
+                                          "that column for rows with a layer; Ctrl+Z undoes.)", labels, start, False)
+        if not ok:
+            return
+        col = dict(cols)[choice]
+        self.book.begin([ws])
+        self.summary_targets()[ws.title] = {"col": col, "name_col": c}
+        self.update_range_summaries([ws.title])
+        self.book.done("format")
+        self.statusBar().showMessage(f"Range summaries go in column {fx.num_to_col(col)} and update as you paint.", 6000)
+
+    def stop_summaries(self):
+        ws = self.current_ws()
+        if ws is None or ws.title not in self.summary_targets():
+            return
+        self.book.begin([])
+        self.summary_targets().pop(ws.title, None)
+        self.book.done("format")
+
     def show_layers_tab(self):
         """Layers on: draw them, open the Layers section, and slide the panel
         open if it's shut."""
@@ -2240,6 +2369,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ book changes
     def on_book_changed(self, kind):
+        if kind in ("ranges", "undo", "maps") and self.book is not None and self.summary_targets():
+            self.update_range_summaries()
         if self.book is not None and self.ws_title:
             self.grid.ring_selection = self.ws_title in self.book.meta["maps"]
         if self.current_ws() is None and self.book is not None:
@@ -3007,11 +3138,15 @@ class MainWindow(QMainWindow):
             existing = self.book.ranges.get(name)
             icon = map_icon(self.theme["accent"])
             if existing is not None and ws.title not in self.book.meta["maps"] and self.map_titles():
-                painted = [t for t in self.map_titles() if existing.has_map(t)]
-                target = painted[0] if painted else self.map_titles()[0]
                 menu.addSeparator()
                 menu.addAction(icon, f"Go to the {existing.name} layer on the map",
-                               lambda: self.show_range(existing.name, target))
+                               lambda: self.go_to_layer(existing.name))
+                spec = self.summary_targets().get(ws.title)
+                if spec:
+                    menu.addAction(f"Range summaries go in column {fx.num_to_col(spec['col'])} · stop updating them",
+                                   self.stop_summaries)
+                else:
+                    menu.addAction("Write range summaries into a column…", self.set_summary_column)
             elif (not ro and "\n" not in name and len(name) <= 60
                     and ws.title not in self.book.meta["maps"] and self.map_titles()):
                 menu.addSeparator()
