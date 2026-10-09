@@ -1,0 +1,257 @@
+# Builds Nous Atlas for Windows (installer), macOS (Apple Silicon + Intel) and
+# Linux (.deb for Mint/Ubuntu/Debian).
+#
+# Runs when you push a version tag, or when you press "Run workflow" on the
+# repo's Actions tab. Not on every push: Mac minutes are expensive.
+#
+#   1. put the new version in the VERSION file (e.g. 0.2.0) and commit
+#   2. git tag v0.2.0 && git push && git push --tags
+#
+# A tag run also publishes a GitHub Release with NousAtlas-Setup.exe, the two
+# Mac zips and NousAtlas-linux-amd64.deb. "Run workflow" only builds (files under Artifacts).
+#
+# The full test suite needs a private workbook, so only the formula tests and
+# the smoke test (which makes its own workbook) run here.
+
+name: Build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install -r requirements.txt
+          choco install innosetup -y --no-progress
+
+      - name: Test
+        run: |
+          .venv\Scripts\python.exe tests\test_formula.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .venv\Scripts\python.exe tests\test_smoke.py
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Build app + installer
+        run: powershell -ExecutionPolicy Bypass -File build.ps1
+
+      - name: Check the installer (install, open a workbook, uninstall)
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path installer-output\NousAtlas-Setup.exe)) { throw "no installer was built" }
+          $app = "$env:LOCALAPPDATA\Programs\Nous Atlas"
+          Start-Process installer-output\NousAtlas-Setup.exe -Wait -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=desktopicon"
+          foreach ($p in "$app\NousAtlas.exe", "$app\_internal",
+                         "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Nous Atlas.lnk",
+                         "$env:USERPROFILE\Desktop\Nous Atlas.lnk") {
+            if (-not (Test-Path $p)) { throw "missing after install: $p" }
+          }
+          $owp = Get-ItemProperty "HKCU:\Software\Classes\.xlsx\OpenWithProgids"
+          if (-not ($owp.PSObject.Properties.Name -contains "NousAtlas.Workbook")) { throw "not in Open with" }
+          $cmd = (Get-ItemProperty "HKCU:\Software\Classes\NousAtlas.Workbook\shell\open\command")."(default)"
+          if ($cmd -ne "`"$app\NousAtlas.exe`" `"%1`"") { throw "bad open command: $cmd" }
+          if (-not (Get-ItemProperty "HKCU:\Software\RegisteredApplications")."Nous Atlas") { throw "not in Default apps" }
+          $ver = (Get-Item "$app\NousAtlas.exe").VersionInfo
+          Write-Host "Installed: $($ver.FileDescription) $($ver.FileVersion)"
+
+          $proc = Start-Process "$app\NousAtlas.exe" -ArgumentList "`"$PWD\tests\ci-sample.xlsx`"" -PassThru
+          Start-Sleep 10
+          if ($proc.HasExited) { throw "Nous Atlas exited right after opening a workbook (code $($proc.ExitCode))" }
+          Write-Host "Running after 10s, window: '$((Get-Process -Id $proc.Id).MainWindowTitle)'"
+          Stop-Process -Id $proc.Id -Force
+          Start-Sleep 2
+
+          Start-Process "$app\unins000.exe" -Wait -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          for ($i = 0; $i -lt 30 -and (Test-Path "$app\NousAtlas.exe"); $i++) { Start-Sleep 1 }
+          foreach ($p in "$app\NousAtlas.exe", "$env:USERPROFILE\Desktop\Nous Atlas.lnk",
+                         "HKCU:\Software\Classes\NousAtlas.Workbook", "HKCU:\Software\Nous Atlas") {
+            if (Test-Path $p) { throw "left behind after uninstall: $p" }
+          }
+          if ((Get-ItemProperty "HKCU:\Software\RegisteredApplications" -ErrorAction SilentlyContinue)."Nous Atlas") { throw "Default apps entry left behind" }
+          Write-Host "Install, launch and uninstall all OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NousAtlas-windows
+          path: installer-output/NousAtlas-Setup.exe
+          retention-days: 30
+
+  linux:
+    # Built on an older Ubuntu so the package runs on Linux Mint 21+ / Ubuntu 22.04+
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 \
+            libxkbcommon-x11-0 libegl1 libgl1 xvfb xdotool desktop-file-utils
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+
+      - name: Test
+        run: |
+          .venv/bin/python tests/test_formula.py
+          .venv/bin/python tests/test_smoke.py
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Build .deb
+        run: |
+          bash build_linux.sh
+          mv nous-atlas_*_amd64.deb NousAtlas-linux-amd64.deb
+
+      - name: Check the .deb (install, open a workbook, uninstall)
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq ./NousAtlas-linux-amd64.deb
+          dpkg -s nous-atlas | grep -E "^(Version|Installed-Size):"
+          test -x /usr/bin/nous-atlas
+          desktop-file-validate /usr/share/applications/nous-atlas.desktop
+          grep "spreadsheetml.sheet=.*nous-atlas.desktop" /usr/share/applications/mimeinfo.cache
+          test -f /usr/share/icons/hicolor/256x256/apps/nous-atlas.png
+
+          xvfb-run -a bash tests/linux_launch_check.sh tests/ci-sample.xlsx
+
+          sudo apt-get remove -y -qq nous-atlas
+          test ! -e /usr/bin/nous-atlas && test ! -e /opt/nous-atlas
+          ! grep -q "nous-atlas.desktop" /usr/share/applications/mimeinfo.cache
+          echo "Install, launch and uninstall all OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NousAtlas-linux
+          path: NousAtlas-linux-amd64.deb
+          retention-days: 30
+
+  linux-clean:
+    # Installs the .deb on bare Linux Mint / LMDE systems: apt must pull in every
+    # system library the app uses (the package only bundles Python and Qt)
+    needs: linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [mint21.3-amd64, mint22.3-amd64, lmde7-amd64]
+    container: linuxmintd/${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: NousAtlas-linux
+
+      - name: Install, open a workbook, uninstall
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq ./NousAtlas-linux-amd64.deb xvfb xauth xdotool fonts-dejavu-core > /dev/null
+          dpkg -s nous-atlas | grep -E "^(Version|Installed-Size):"
+          missing=$(find /opt/nous-atlas -type f \( -name "*.so*" -o -name NousAtlas \) -print0 |
+            xargs -0 ldd 2>/dev/null | awk '/:$/ { f = $0 } /not found/ { print f, $0 }' || true)
+          [ -z "$missing" ] || { echo "$missing"; exit 1; }
+          xvfb-run -a bash tests/linux_launch_check.sh tests/ci-sample.xlsx
+          apt-get remove -y -qq nous-atlas > /dev/null
+          test ! -e /opt/nous-atlas
+
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15          # Apple Silicon (M1 and newer)
+            arch: apple-silicon
+          - runner: macos-15-intel    # older Intel Macs
+            arch: intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install
+        run: python -m pip install -r requirements.txt pillow
+
+      - name: Test
+        run: |
+          python tests/test_formula.py
+          python tests/test_smoke.py
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Build
+        run: python -m PyInstaller --noconfirm --clean NousAtlas-mac.spec
+
+      - name: Check the app starts
+        run: |
+          "dist/Nous Atlas.app/Contents/MacOS/NousAtlas" "$PWD/tests/ci-sample.xlsx" &
+          pid=$!
+          sleep 8
+          kill -0 $pid && echo "still running after 8s" && kill $pid
+
+      - name: Zip
+        # ditto keeps the app's symlinks and signature intact (a plain zip breaks them)
+        run: ditto -c -k --keepParent "dist/Nous Atlas.app" "NousAtlas-mac-${{ matrix.arch }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NousAtlas-mac-${{ matrix.arch }}
+          path: NousAtlas-mac-${{ matrix.arch }}.zip
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, mac, linux, linux-clean]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches VERSION file
+        run: |
+          want="$(tr -d '[:space:]' < VERSION)"
+          if [ "${GITHUB_REF_NAME#v}" != "$want" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match VERSION ($want)"; exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Nous Atlas ${{ github.ref_name }}
+          files: release-files/*
+          body: |
+            **Windows:** download `NousAtlas-Setup.exe` and open it.
+            **Mac:** `NousAtlas-mac-apple-silicon.zip` for M1 and newer, `NousAtlas-mac-intel.zip` for Intel Macs.
+            **Linux (Mint, Ubuntu, Debian):** download `NousAtlas-linux-amd64.deb` and double-click it, or `sudo apt install ./NousAtlas-linux-amd64.deb`.
+
+            Step-by-step instructions (including the one-time security warnings): https://nousatlas.lionthroat.com

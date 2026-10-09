@@ -38,3 +38,14 @@ $drop = @("opengl32sw.dll", "Qt6Quick*.dll", "Qt6Qml*.dll", "Qt6Pdf*.dll", "Qt6N
 foreach ($d in $drop) { Remove-Item (Join-Path $qt $d) -Recurse -Force -ErrorAction SilentlyContinue }
 $mb = (Get-ChildItem (Join-Path $root "dist\NousAtlas") -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
 Write-Host ("Built: {0} (version {1}, {2:N0} MB)" -f (Join-Path $root 'dist\NousAtlas\NousAtlas.exe'), $version, $mb)
+
+# The installer, if Inno Setup 6 is around
+$iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+          "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($iscc) {
+    & $iscc /Q (Join-Path $root "installer.iss")
+    if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+    Write-Host "Built: $(Join-Path $root 'installer-output\NousAtlas-Setup.exe')"
+} else {
+    Write-Host "(Inno Setup 6 not found, so no installer; GitHub builds it on version tags)"
+}

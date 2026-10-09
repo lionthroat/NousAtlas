@@ -11,7 +11,7 @@ import os
 import re
 import sys
 
-from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QPointF, QSettings, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices,
                            QFont, QFontDatabase, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
@@ -3231,9 +3231,23 @@ def map_icon(color):
     return QIcon(pm)
 
 
+class AtlasApp(QApplication):
+    """On macOS a double-clicked workbook (Finder, Open With, the Dock icon)
+    arrives as a FileOpen event rather than a command-line argument."""
+    window = None
+
+    def event(self, e):
+        if e.type() == QEvent.FileOpen and e.file() and self.window is not None:
+            self.window.open_path(e.file())
+            self.window.raise_()
+            self.window.activateWindow()
+            return True
+        return super().event(e)
+
+
 def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app = QApplication(sys.argv)
+    app = AtlasApp(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("Nous")
     app.setWindowIcon(app_icon())
@@ -3241,6 +3255,7 @@ def main():
     if sys.platform == "win32":
         app.setFont(QFont("Segoe UI", 10))
     w = MainWindow()
+    app.window = w
     w.show()
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if args and os.path.exists(args[0]):

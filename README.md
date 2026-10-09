@@ -6,6 +6,8 @@ many sheets, plus maps. A sibling of Nous PDF.
 Files stay ordinary `.xlsx`. Excel, LibreOffice and scripts (openpyxl) can
 still open everything Atlas saves.
 
+**Download** for Windows, Mac or Linux: https://nousatlas.lionthroat.com
+
 ## What it does
 
 - **Sheets in a sidebar**, in collapsible groups you make yourself. Drag to
@@ -114,9 +116,23 @@ python -m venv .venv
 
 Tests (each prints OK): `tests\test_formula.py`, `tests\test_model.py`,
 `tests\test_app.py`, `tests\test_palette.py`. They only ever work on copies,
-in a temp folder.
+in a temp folder. Most need a private sample workbook in `tests\fixtures\`;
+`tests\test_smoke.py` makes its own, so it's the one GitHub runs.
 
 ## Building
 
 `powershell -ExecutionPolicy Bypass -File build.ps1` makes
-`dist\NousAtlas\NousAtlas.exe`. The version lives in `VERSION`.
+`dist\NousAtlas\NousAtlas.exe`. The version lives in `VERSION`. With Inno
+Setup 6 installed it also makes `installer-output\NousAtlas-Setup.exe`.
+
+Releases are built by GitHub (`.github/workflows/build.yml`): bump `VERSION`,
+commit, then `git tag v0.2.0 && git push && git push --tags`. That builds the
+Windows installer, both Mac zips (`NousAtlas-mac.spec`) and the Linux .deb
+(`build_linux.sh`), checks each one installs and opens a workbook, and
+publishes a GitHub Release. The download page is `site/`, a static Cloudflare
+Worker: `cd site && npx wrangler@4 deploy`.
+
+## License
+
+MIT (see `LICENSE`). The downloadable builds bundle Qt / PySide6 (LGPL-3.0) as
+separate, replaceable library files.
