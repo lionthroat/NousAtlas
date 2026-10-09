@@ -453,12 +453,13 @@ print("OK toolbar")
 # ---- Layers panel can't get lost; Draw-as from the button menu; only the selected area draws
 w.open_sheet(mp)
 w.right.setCurrentIndex(0)
-w.splitter.setSizes([200, 1200, 0]); w.right_panel_moved(); app.processEvents()
+w.set_panel(False); app.processEvents()
 assert not w.panel_open() and not w.layers_showing()
 w.layers_btn.click(); app.processEvents()
-assert w.splitter.sizes()[2] >= 260 and w.layers_showing(), w.splitter.sizes()
+assert w.panel_open() and w.layers_showing()
+assert w.right.width() >= w.ranges_panel.minimumSizeHint().width(), (w.right.width(), w.ranges_panel.minimumSizeHint().width())
 w.layers_btn.click(); app.processEvents()
-assert not w.panel_open(), w.splitter.sizes()        # it was shut before, so it shuts again
+assert not w.panel_open()        # it was shut before, so it shuts again
 w.a_panel.trigger(); assert w.panel_open()
 w.layers_btn.click(); w.layers_btn.click(); assert w.panel_open()   # opened by hand: stays open
 w.show_layers_tab()
@@ -490,4 +491,8 @@ pp = _P(); w.grid.overlay.paint(pp, w.book.sheet(mp), r7, c7, w.grid.cell_rect(r
 st.all_areas = False
 QTest.keyPress(w.grid, Qt.Key_Alt); assert w.grid.viewport().cursor().shape() == Qt.CrossCursor
 QTest.keyRelease(w.grid, Qt.Key_Alt); assert w.grid.viewport().cursor().shape() != Qt.CrossCursor
+w.sidebar_btn.click(); assert w.splitter.sizes()[0] == 0
+w.sidebar_btn.click(); assert w.splitter.sizes()[0] > 0
+w.dock.setFloating(True); app.processEvents(); assert w.panel_open()
+w.redock_panel(); assert not w.dock.isFloating() and w.panel_open()
 print("OK layers panel")

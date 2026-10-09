@@ -120,6 +120,12 @@ def draw_icon(kind, color="#d8dee9", accent=None):
         p.drawRect(3, 2, 14, 11)
         p.setPen(Qt.NoPen)
         p.fillRect(3, 15, 14, 4, qcolor(accent) if accent else QColor(color))
+    elif kind in ("pane_left", "pane_right"):
+        p.setPen(QPen(QColor(color), 1.5))
+        p.drawRoundedRect(2, 3, 16, 14, 2, 2)
+        x = 7 if kind == "pane_left" else 13
+        p.drawLine(x, 3, x, 17)
+        p.fillRect(3 if kind == "pane_left" else 13, 4, 4, 12, QColor(color))
     elif kind == "spacing":
         p.setPen(QPen(QColor(color), 1.2))
         for x, y in ((3, 3), (11, 3), (3, 11), (11, 11)):
@@ -862,16 +868,25 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter()
         self.splitter.addWidget(self.sidebar)
         self.splitter.addWidget(center)
-        self.splitter.addWidget(self.right)
-        self.right.setMinimumWidth(260)
-        self.splitter.setCollapsible(2, True)       # drag it shut if you like; Ctrl+\ brings it back
         self.splitter.setCollapsible(0, True)
-        self.splitter.splitterMoved.connect(lambda *a: self.right_panel_moved())
-        self._panel_auto = False                    # opened by Layers; close it again when Layers goes off
+        self.splitter.setCollapsible(1, False)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([230, 900, 320])
+        self.splitter.setSizes([230, 1200])
         self.splitter.setHandleWidth(1)
+        self.splitter.splitterMoved.connect(lambda *a: self.sync_pane_buttons())
         self.setCentralWidget(self.splitter)
+
+        # Cell and Layers: a panel you can close, float and drag anywhere, or dock left or right
+        from PySide6.QtWidgets import QDockWidget
+        self.dock = QDockWidget("Cell · Layers", self)
+        self.dock.setObjectName("panel_dock")
+        self.dock.setWidget(self.right)
+        self.dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable |
+                              QDockWidget.DockWidgetFloatable)
+        self.dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
+        self.dock.visibilityChanged.connect(lambda *a: self.right_panel_moved())
+        self._panel_auto = False                    # opened by Layers; close it again when Layers goes off
 
         self.build_actions()
         self.build_toolbar()
@@ -893,13 +908,17 @@ class MainWindow(QMainWindow):
         else:
             screen = QApplication.primaryScreen().availableGeometry()
             self.resize(int(screen.width() * 0.85), int(screen.height() * 0.85))
-        sizes = self.settings.value("splitter")
+        sizes = self.settings.value("splitter2")
         if sizes:
             try:
-                self.splitter.setSizes([int(x) for x in sizes])
+                self.splitter.setSizes([int(x) for x in sizes][:2])
             except (TypeError, ValueError):
                 pass
-        self.a_panel.setChecked(self.panel_open())
+        state = self.settings.value("window_state")
+        if state is not None:
+            self.restoreState(state)
+        self.fit_panel_width()
+        self.sync_pane_buttons()
 
     # ------------------------------------------------------------ actions
     def act(self, text, fn, shortcut=None, checkable=False, tip=None):
@@ -958,6 +977,13 @@ class MainWindow(QMainWindow):
         tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
         self.toolbar = tb
+        self.sidebar_btn = QToolButton()
+        self.sidebar_btn.setCheckable(True)
+        self.sidebar_btn.setChecked(True)
+        self.sidebar_btn.setToolTip("Show or hide the sheet list (Ctrl+Shift+\\)")
+        self.sidebar_btn.clicked.connect(self.set_sidebar)
+        tb.addWidget(self.sidebar_btn)
+        tb.addSeparator()
         self.font_box = FontBox(self.fonts_in_use)
         self.font_box.setMinimumWidth(210)
         self.font_box.setMaximumWidth(260)
@@ -1084,6 +1110,11 @@ class MainWindow(QMainWindow):
         self.row_mode_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.row_mode_btn.toggled.connect(self.set_row_mode)
         tb.addWidget(self.row_mode_btn)
+        self.panel_btn = QToolButton()
+        self.panel_btn.setCheckable(True)
+        self.panel_btn.setToolTip("Show or hide the Cell and Layers panel (Ctrl+\\). Drag its title bar to float it.")
+        self.panel_btn.clicked.connect(lambda on: (self.set_panel(on), setattr(self, "_panel_auto", False)))
+        tb.addWidget(self.panel_btn)
 
     def build_menus(self):
         mb = self.menuBar()
@@ -1119,10 +1150,14 @@ class MainWindow(QMainWindow):
 
         v = mb.addMenu("&View")
         v.addAction(self.a_goto)
-        self.a_panel = self.act("Side panel (Cell and Layers)", lambda on: (self.set_panel(on),
+        self.a_panel = self.act("Cell and Layers panel", lambda on: (self.set_panel(on),
                                 setattr(self, "_panel_auto", False)), "Ctrl+\\", True)
         self.a_panel.setChecked(True)
         v.addAction(self.a_panel)
+        self.a_sidebar = self.act("Sheet list", self.set_sidebar, "Ctrl+Shift+\\", True)
+        self.a_sidebar.setChecked(True)
+        v.addAction(self.a_sidebar)
+        v.addAction(self.act("Put the panel back on the right", self.redock_panel))
         v.addAction(self.a_back)
         v.addAction(self.a_fwd)
         v.addSeparator()
@@ -1214,6 +1249,8 @@ class MainWindow(QMainWindow):
         self.a_clear_fmt.setIcon(draw_icon("clear", t["text"]))
         self.border_btn.setIcon(draw_icon("borders", t["text"]))
         self.spacing_btn.setIcon(draw_icon("spacing", t["text"]))
+        self.sidebar_btn.setIcon(draw_icon("pane_left", t["text"]))
+        self.panel_btn.setIcon(draw_icon("pane_right", t["text"]))
         self.update_color_buttons()
         if self.book is not None:
             self.rebuild_sidebar()
@@ -1395,7 +1432,8 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         self.settings.setValue("geometry", self.saveGeometry())
-        self.settings.setValue("splitter", self.splitter.sizes())
+        self.settings.setValue("splitter2", self.splitter.sizes())
+        self.settings.setValue("window_state", self.saveState())
         e.accept()
 
     def update_title(self):
@@ -1628,24 +1666,54 @@ class MainWindow(QMainWindow):
         self.grid.viewport().update()
 
     def panel_open(self):
-        return self.splitter.sizes()[2] > 0
+        return self.dock.isVisible()
+
+    def fit_panel_width(self):
+        """The panel is never narrower than its contents need."""
+        need = max(self.ranges_panel.minimumSizeHint().width(), self.inspector.minimumSizeHint().width()) + 24
+        self.right.setMinimumWidth(need)
+        return need
 
     def set_panel(self, show):
-        sizes = self.splitter.sizes()
-        if show and sizes[2] == 0:
-            self.splitter.setSizes([sizes[0], max(300, sizes[1] - 330), 330])
-        elif not show and sizes[2] > 0:
-            self.splitter.setSizes([sizes[0], sizes[1] + sizes[2], 0])
-        self.a_panel.setChecked(show)
+        if show and not self.dock.isVisible():
+            self.dock.show()
+            if not self.dock.isFloating():
+                self.resizeDocks([self.dock], [self.fit_panel_width() + 20], Qt.Horizontal)
+        elif not show and self.dock.isVisible():
+            self.dock.hide()
+        self.sync_pane_buttons()
         self.grid.viewport().update()
 
-    def right_panel_moved(self):
+    def set_sidebar(self, show):
+        sizes = self.splitter.sizes()
+        if show and sizes[0] == 0:
+            self.splitter.setSizes([230, max(300, sizes[1] - 230)])
+        elif not show and sizes[0] > 0:
+            self.splitter.setSizes([0, sizes[0] + sizes[1]])
+        self.sync_pane_buttons()
+
+    def sync_pane_buttons(self):
+        if not hasattr(self, "panel_btn"):
+            return
+        for btn, on in ((self.sidebar_btn, self.splitter.sizes()[0] > 0), (self.panel_btn, self.panel_open())):
+            btn.blockSignals(True)
+            btn.setChecked(on)
+            btn.blockSignals(False)
         self.a_panel.setChecked(self.panel_open())
+        self.a_sidebar.setChecked(self.splitter.sizes()[0] > 0)
+        self.layers_btn.setChecked(self.layers_showing())
+
+    def right_panel_moved(self):
         if not self.panel_open():
             self._panel_auto = False
             self.stop_painting(quiet=True)
-        self.layers_btn.setChecked(self.layers_showing())
+        self.sync_pane_buttons()
         self.grid.viewport().update()
+
+    def redock_panel(self):
+        self.dock.setFloating(False)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
+        self.set_panel(True)
 
     def show_layers_tab(self):
         """Open the Layers tab, sliding the side panel open if it's shut."""

@@ -76,12 +76,16 @@ def stylesheet(t):
     QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
     QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
     QSplitter::handle {{ background: {t['border']}; }}
+    QDockWidget {{ color: {t['muted']}; }}
+    QDockWidget::title {{ background: {t['panel']}; padding: 5px 8px; border-bottom: 1px solid {t['border']}; }}
     QStatusBar {{ background: {t['panel']}; color: {t['muted']}; }}
     QLabel#muted {{ color: {t['muted']}; background: transparent; }}
     QLabel#faint {{ color: {t['faint']}; background: transparent; }}
     QLabel#heading {{ color: {t['group']}; font-weight: bold; background: transparent; }}
     QFrame#panel {{ background: {t['panel']}; }}
-    QCheckBox {{ background: transparent; }}
+    QCheckBox {{ background: transparent; spacing: 6px; }}
+    QCheckBox::indicator {{ width: 13px; height: 13px; border: 1px solid {t['faint']}; border-radius: 3px; background: {t['canvas']}; }}
+    QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}
     QToolTip {{ background: {t['panel']}; color: {t['text']}; border: 1px solid {t['border']}; }}
     """
 

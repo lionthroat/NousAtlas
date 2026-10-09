@@ -614,10 +614,15 @@ class RangesPanel(QWidget):
         row = QHBoxLayout()
         row.setSpacing(3)
         self.paint_btn = QPushButton("Paint")
+        paint_row = row
         self.paint_btn.setCheckable(True)
         self.paint_btn.setToolTip("Click or drag over squares. Shift-drag (or the Erase brush) removes.")
         self.paint_btn.toggled.connect(self.paint_toggled)
         row.addWidget(self.paint_btn)
+        row.addStretch()
+        b.addLayout(paint_row)
+        row = QHBoxLayout()
+        row.setSpacing(3)
         self.level_group = QButtonGroup(self)
         for lv, label in ((3, "Common"), (2, "Uncommon"), (1, "Rare"), (0, "Erase")):
             btn = QPushButton(label)
